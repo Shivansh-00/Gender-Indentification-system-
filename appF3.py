@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 from PIL import Image
 from datetime import datetime
+import cv2
+from face_engine import FaceEngine
 
 # Initialize session state
 if 'main_folders' not in st.session_state: st.session_state.main_folders = {}
@@ -11,6 +13,12 @@ if 'current_user' not in st.session_state: st.session_state.current_user = None
 if 'page' not in st.session_state: st.session_state.page = "login"
 if 'current_event' not in st.session_state: st.session_state.current_event = None
 if 'current_folder' not in st.session_state: st.session_state.current_folder = None
+
+# Multi-person attendance state
+if 'face_engine' not in st.session_state: st.session_state.face_engine = FaceEngine()
+if 'detected_faces' not in st.session_state: st.session_state.detected_faces = []
+if 'current_face_idx' not in st.session_state: st.session_state.current_face_idx = 0
+if 'last_photo_hash' not in st.session_state: st.session_state.last_photo_hash = None
 
 st.set_page_config(page_title="Gender Attendance", layout="wide")
 
@@ -159,49 +167,127 @@ def event_dashboard():
         elif st.session_state.subpage == "database": database_page(event)
         elif st.session_state.subpage == "hall": hall_page(event)
 
+def draw_faces(image_pil, faces, current_idx):
+    img_cv = np.array(image_pil)
+    img_cv = cv2.cvtColor(img_cv, cv2.COLOR_RGB2BGR)
+    
+    for idx, face in enumerate(faces):
+        top, right, bottom, left = face['bbox']
+        
+        # Highlight current face
+        if idx == current_idx:
+            color = (0, 255, 0) # Green for current
+            thickness = 3
+            label = f"P{idx+1} (Current)"
+        else:
+            color = (255, 0, 0) # Red for others
+            thickness = 2
+            if idx < current_idx:
+                label = f"P{idx+1} (Done)"
+                color = (200, 200, 200) # Gray for done
+            else:
+                label = f"P{idx+1}"
+        
+        cv2.rectangle(img_cv, (left, top), (right, bottom), color, thickness)
+        cv2.putText(img_cv, f"{label} - {face['gender']}", (left, top - 10), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        
+    return Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
+
 def attendance_page(event):
     st.header("📸 Live Attendance")
-    privacy_mode = st.selectbox("Mode:", ["Normal (Name+Face)", "Privacy (Gender+Seat)"])
     
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([2, 1])
+    
     with col1:
         st.markdown("**📷 Webcam**")
-        img_file = st.camera_input("Take photo")
-        if img_file:
-            image = Image.open(img_file)
-            st.image(image, caption="✅ Captured!", use_column_width=True)
-            gender, confidence = simple_gender_detection(image)
-            seat = f"Row A, Seat {len(event['data']) % event['hall_cols'] + 1}"
+        img_buffer = st.camera_input("Take photo")
+        
+        if img_buffer:
+            # Check if this is a new photo
+            bytes_data = img_buffer.getvalue()
+            if st.session_state.last_photo_hash != bytes_data:
+                st.session_state.last_photo_hash = bytes_data
+                
+                # New photo - Process it
+                with st.spinner("🔍 Detecting faces..."):
+                    image = Image.open(img_buffer)
+                    # Load known faces for dedup check (optional, if implemented in engine)
+                    # st.session_state.face_engine.load_known_faces({st.session_state.current_event: event})
+                    
+                    faces = st.session_state.face_engine.process_image(image)
+                    st.session_state.detected_faces = faces
+                    st.session_state.current_face_idx = 0
             
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Gender", gender)
-            col2.metric("Confidence", f"{confidence}%")
-            col3.metric("Total", len(event["data"]))
-            st.success(f"🎯 Seat: {seat}")
+            # Use detected faces
+            faces = st.session_state.detected_faces
+            current_idx = st.session_state.current_face_idx
+            original_image = Image.open(img_buffer)
             
-            if privacy_mode == "Normal":
-                with st.form("form"):
-                    name = st.text_input("Name")
-                    submitted = st.form_submit_button("✅ Register")
-                    if submitted and name:
-                        event["data"].append({
-                            "sl_no": len(event["data"])+1, "gender": gender,
-                            "name": name, "seat": seat
-                        })
-                        st.success("✅ Registered!")
-                        st.rerun()
-            else:
-                if st.button("✅ Register (Privacy)", type="secondary"):
-                    event["data"].append({
-                        "sl_no": len(event["data"])+1, "gender": gender, "seat": seat
-                    })
+            if not faces:
+                st.warning("⚠️ No faces detected! Try again.")
+                st.image(original_image, use_column_width=True)
+            elif current_idx >= len(faces):
+                st.success("✅ All faces processed for this photo!")
+                st.image(draw_faces(original_image, faces, -1), use_column_width=True)
+                if st.button("📸 Next Photo"):
+                    # Clear state for next photo
+                    st.session_state.last_photo_hash = None
+                    st.session_state.detected_faces = []
                     st.rerun()
+            else:
+                # Registration in progress
+                st.info(f"📝 Registering Person {current_idx + 1} of {len(faces)}")
+                
+                # Draw boxes
+                display_img = draw_faces(original_image, faces, current_idx)
+                st.image(display_img, caption=f"Processing P{current_idx+1}", use_column_width=True)
+                
+                # Current person details
+                face = faces[current_idx]
+                seat = f"Row A, Seat {len(event['data']) % event['hall_cols'] + 1}" # Simple seat logic
+                
+                with st.form(key=f"reg_form_{current_idx}"):
+                    # Show cropped face for clarity
+                    top, right, bottom, left = face['bbox']
+                    # Ensure bbox is within bounds
+                    top, left = max(0, top), max(0, left)
+                    bottom, right = min(original_image.height, bottom), min(original_image.width, right)
+                    
+                    face_crop = original_image.crop((left, top, right, bottom))
+                    st.image(face_crop, caption="Current Person", width=150)
+                    
+                    st.write(f"**Details for P{current_idx+1}:**")
+                    col_a, col_b = st.columns(2)
+                    col_a.metric("Gender", face['gender'])
+                    col_b.metric("Confidence", f"{face['confidence']:.1f}%" if isinstance(face['confidence'], (int, float)) else "N/A")
+                    
+                    name = st.text_input("Name", key=f"name_input_{current_idx}")
+                    
+                    if st.form_submit_button("✅ Register & Next"):
+                        if name:
+                            # Save data
+                            event["data"].append({
+                                "sl_no": len(event["data"])+1,
+                                "name": name,
+                                "gender": face['gender'],
+                                "seat": seat,
+                                "encoding": face['encoding'] # Store encoding for future duplicate checks
+                            })
+                            st.success(f"✅ Saved {name}!")
+                            st.session_state.current_face_idx += 1
+                            st.rerun()
+                        else:
+                            st.error("⚠️ Please enter a name.")
     
     with col2:
-        st.markdown("**📁 Upload**")
-        uploaded = st.file_uploader("Photo", type=['png','jpg','jpeg'])
-        if uploaded: st.image(uploaded, width=250)
-    
+        st.markdown("### 📋 Session Log")
+        if event["data"]:
+            df = pd.DataFrame(event["data"])
+            st.dataframe(df.iloc[::-1].head(5)[['name', 'gender', 'seat']], hide_index=True)
+        else:
+            st.info("No registrations yet.")
+            
     # Back button
     if st.button("⬅️ Back to Dashboard"): 
         st.session_state.subpage = None; st.rerun()
