@@ -12,7 +12,9 @@ try:
 except ImportError:
     FPDF = None
     print("Warning: FPDF not found. Install 'fpdf' for PDF reports.")
-import base64
+import plotly.express as px
+import plotly.graph_objects as go
+import cv2
 
 # Custom Modules
 try:
@@ -41,42 +43,247 @@ st.set_page_config(page_title="Gender Attendance AI", layout="wide")
 def local_css():
     st.markdown("""
     <style>
-    .stApp {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        background-attachment: fixed;
-    }
-    div[data-testid="stExpander"], div[data-testid="stForm"], div[data-testid="stSidebar"] {
-        background: rgba(255, 255, 255, 0.1);
-        backdrop-filter: blur(10px);
-        -webkit-backdrop-filter: blur(10px);
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        padding: 20px;
-        box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
-    }
-    input, .stSelectbox > div > div > div {
-        background: rgba(255, 255, 255, 0.2) !important;
-        color: white !important;
-    }
-    h1, h2, h3, h4, .stMarkdown, label, .stDataFrame, .stMetricLabel {
-        color: white !important;
-        text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
-    }
-    div[data-testid="stMetricValue"] { color: white !important; }
-    .stButton > button {
-        background: rgba(255, 255, 255, 0.25);
-        color: white;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        transition: all 0.3s ease;
-    }
-    .stButton > button:hover {
-        background: rgba(255, 255, 255, 0.4);
-        transform: scale(1.05);
-    }
+        /* IMPORT FONTS */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@400;700&display=swap');
+        
+        /* GLOBAL THEME & ANIMATED BACKGROUND */
+        :root {
+            --primary: #7F5AF0;
+            --secondary: #2CB67D;
+            --accent: #FF8906;
+            --bg-dark: #16161A;
+            --bg-card: rgba(255, 255, 255, 0.05);
+            --text-light: #FFFFFE;
+            --glass-border: rgba(255, 255, 255, 0.1);
+        }
+        
+        body {
+            background-color: var(--bg-dark);
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(127, 90, 240, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 0%, rgba(44, 182, 125, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(255, 137, 6, 0.1) 0px, transparent 50%);
+            background-attachment: fixed;
+            color: var(--text-light);
+            font-family: 'Outfit', sans-serif;
+        }
+        
+        /* CUSTOM SCROLLBAR */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(127, 90, 240, 0.3); 
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(127, 90, 240, 0.6); 
+        }
+
+        /* HEADERS */
+        h1, h2, h3, h4, h5, h6 {
+            font-family: 'Inter', sans-serif;
+            font-weight: 800 !important;
+            letter-spacing: -0.02em;
+            background: -webkit-linear-gradient(0deg, #FFFFFE, #94A1B2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 1rem !important;
+        }
+
+        /* GLOSSY CARDS */
+        .card, [data-testid="stMetric"], [data-testid="stExpander"], div.stDataFrame, div[data-testid="stForm"], div[data-testid="stSidebar"] {
+            background: var(--bg-card) !important;
+            backdrop-filter: blur(16px) !important;
+            -webkit-backdrop-filter: blur(16px) !important;
+            border: 1px solid var(--glass-border) !important;
+            border-radius: 20px !important;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3) !important;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        
+        .card:hover, [data-testid="stMetric"]:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px 0 rgba(127, 90, 240, 0.2) !important;
+            border-color: rgba(127, 90, 240, 0.3) !important;
+        }
+
+        /* METRIC CARDS SPECIFICS */
+        [data-testid="stMetric"] {
+            padding: 1.5rem;
+            text-align: center;
+        }
+        [data-testid="stMetricLabel"] { font-size: 0.9rem; color: #94A1B2 !important; letter-spacing: 0.05em; text-transform: uppercase; }
+        [data-testid="stMetricValue"] { font-size: 2.2rem !important; font-weight: 700; color: var(--text-light) !important; text-shadow: 0 0 20px rgba(127,90,240,0.5); }
+
+        /* BUTTONS - GLOSSY & ANIMATED */
+        div.stButton > button {
+            background: linear-gradient(135deg, rgba(127, 90, 240, 0.8), rgba(44, 182, 125, 0.8)) !important;
+            color: white !important;
+            border: 1px solid rgba(255,255,255,0.2) !important;
+            border-radius: 12px !important;
+            padding: 0.75rem 1.5rem !important;
+            font-weight: 600 !important;
+            font-family: 'Inter', sans-serif !important;
+            letter-spacing: 0.03em !important;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2), inset 0 1px 0 rgba(255,255,255,0.3) !important;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+            position: relative;
+            overflow: hidden;
+            width: 100%;
+        }
+        
+        div.stButton > button::before {
+            content: '';
+            position: absolute;
+            top: 0; left: -100%;
+            width: 100%; height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            transition: 0.5s;
+        }
+        
+        div.stButton > button:hover {
+            transform: translateY(-3px) scale(1.02);
+            box-shadow: 0 8px 25px rgba(127, 90, 240, 0.4), inset 0 1px 0 rgba(255,255,255,0.4) !important;
+            border-color: rgba(255,255,255,0.5) !important;
+        }
+        
+        div.stButton > button:hover::before {
+            left: 100%;
+        }
+        
+        div.stButton > button:active {
+            transform: scale(0.98);
+        }
+
+        /* INPUT FIELDS */
+        .stTextInput > div > div > input, .stDateInput > div > div > input, .stSelectbox > div > div > div {
+            background-color: rgba(0,0,0,0.2) !important;
+            color: white !important;
+            border: 1px solid var(--glass-border) !important;
+            border-radius: 10px !important;
+            padding: 0.5rem 1rem !important;
+        }
+        .stTextInput > div > div > input:focus, .stDateInput > div > div > input:focus {
+            border-color: var(--primary) !important;
+            box-shadow: 0 0 0 2px rgba(127, 90, 240, 0.2) !important;
+        }
+
+        /* CUSTOM ANIMATIONS */
+        @keyframes subtleFloat {
+            0% { transform: translateY(0px); }
+            50% { transform: translateY(-5px); }
+            100% { transform: translateY(0px); }
+        }
+        
+        /* APPLY ANIMATION TO MAIN LOGO/HEADER IF DESIRED */
+        h1 { animation: subtleFloat 4s ease-in-out infinite; }
+        
+        /* CAMERA INPUT */
+        div[data-testid="stCameraInput"] {
+            border: 2px solid var(--glass-border);
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }
+        
+        /* LOGIN PAGE STYLES */
+        .login-title {
+            font-family: 'Inter', sans-serif;
+            font-weight: 800;
+            font-size: 3.5rem;
+            color: #ffffff;
+            text-align: center;
+            margin-bottom: 0.2rem;
+            letter-spacing: -0.05em;
+            text-shadow: 0 0 10px rgba(0, 255, 0, 0.6), 0 0 20px rgba(0, 255, 0, 0.4), 0 0 40px rgba(0, 255, 0, 0.2);
+            animation: glow 2s ease-in-out infinite alternate;
+        }
+        
+        .login-subtitle {
+            font-family: 'Inter', sans-serif;
+            font-weight: 300;
+            font-size: 1rem;
+            color: rgba(255, 255, 255, 0.7);
+            text-align: center;
+            font-style: italic;
+            margin-bottom: 2rem;
+            letter-spacing: 0.05em;
+        }
+        
+        @keyframes glow {
+            from { text-shadow: 0 0 10px rgba(44, 182, 125, 0.6), 0 0 20px rgba(44, 182, 125, 0.4); }
+            to { text-shadow: 0 0 20px rgba(44, 182, 125, 1), 0 0 30px rgba(44, 182, 125, 0.6); }
+        }
+        
+        /* STARRY BACKGROUND - FIX */
+        #stars-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1; /* Bring forward to be visible */
+            overflow: hidden;
+            pointer-events: none; /* Let clicks pass through */
+            background: transparent; /* Let the gradient mesh show through */
+        }
+        
+        /* Ensure content sits above stars */
+        .stApp > header, .stApp > div:nth-child(1) {
+            z-index: 2;
+            position: relative;
+        }
+        
+        .star {
+            position: absolute;
+            background: white;
+            border-radius: 50%;
+            opacity: 0;
+            animation: twinkle 5s infinite;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
+        }
+        
+        @keyframes twinkle {
+            0% { opacity: 0; transform: translateY(0) scale(0.5); }
+            50% { opacity: 1; transform: translateY(-20px) scale(1.2); }
+            100% { opacity: 0; transform: translateY(-40px) scale(0.5); }
+        }
     </style>
     """, unsafe_allow_html=True)
 
 local_css()
+
+def draw_faces(image_pil, faces, current_idx):
+    img_cv = np.array(image_pil)
+    img_cv = cv2.cvtColor(img_cv, cv2.COLOR_RGB2BGR)
+    
+    for idx, face in enumerate(faces):
+        top, right, bottom, left = face['bbox']
+        
+        # Highlight current face
+        if idx == current_idx:
+            color = (0, 255, 0) # Green for current
+            thickness = 3
+            label = f"P{idx+1} (Current)"
+        else:
+            color = (255, 0, 0) # Red for others
+            thickness = 2
+            if idx < current_idx:
+                label = f"P{idx+1} (Done)"
+                color = (200, 200, 200) # Gray for done
+            else:
+                label = f"P{idx+1}"
+        
+        cv2.rectangle(img_cv, (left, top), (right, bottom), color, thickness)
+        cv2.putText(img_cv, f"{label} - {face['gender']}", (left, top - 10), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        
+    return Image.fromarray(cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB))
 
 # --- HELPER FUNCTIONS ---
 def generate_code():
@@ -100,17 +307,25 @@ def render_header():
                 st.session_state.subpage = None
             elif st.session_state.page == "event_menu":
                 st.session_state.page = "events_list"
-            elif st.session_state.page in ["events_list", "create_event", "create_folder", "view_folders"]:
+            elif st.session_state.page in ["events_list", "create_event", "create_folder", "view_folders", "batch_upload"]:
                 st.session_state.page = "home"
             st.rerun()
 
 # --- PAGES ---
 
 def login_page():
+    # Starry Background Injection
+    st.markdown("""
+    <div id="stars-container">
+        """ + "".join([f'<div class="star" style="top: {random.randint(0,100)}%; left: {random.randint(0,100)}%; width: {random.randint(1,3)}px; height: {random.randint(1,3)}px; animation-duration: {random.randint(3,8)}s; animation-delay: {random.uniform(0,5)}s;"></div>' for _ in range(100)]) + """
+    </div>
+    """, unsafe_allow_html=True)
+    
     render_header()
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
-        st.title("🔐 Event Host Login")
+        st.markdown('<div class="login-title">EquiVision</div>', unsafe_allow_html=True)
+        st.markdown('<div class="login-subtitle">Vision Beyond Bias. Seeking Equality. Shaping Fairness</div>', unsafe_allow_html=True)
         
         if st.session_state.auth_stage == 0:
             username = st.text_input("Username")
@@ -249,9 +464,9 @@ def event_menu():
 
     c7, c8, c9 = st.columns(3)
     with c7:
-        st.info("�📂 Import")
-        if st.button("Upload CSV File", use_container_width=True):
-            st.session_state.subpage = "upload_csv"
+        st.info("📂 Batch Import")
+        if st.button("Upload Multiple Pictures", use_container_width=True):
+            st.session_state.subpage = "batch_upload"
             st.rerun()
 
     st.markdown("---")
@@ -264,7 +479,8 @@ def event_menu():
     elif st.session_state.subpage == "hall_dims": hall_dims(evt)
     elif st.session_state.subpage == "team_analysis": team_analysis(evt)
     elif st.session_state.subpage == "team_management": team_management(evt)
-    elif st.session_state.subpage == "upload_csv": upload_csv(evt)
+    elif st.session_state.subpage == "team_management": team_management(evt)
+    elif st.session_state.subpage == "batch_upload": batch_upload_page(evt)
 
 def attendance_setup(evt):
     st.subheader("🏁 Start Attendance Session")
@@ -275,142 +491,144 @@ def attendance_setup(evt):
         st.rerun()
 
 def attendance_active(evt):
-    mode = st.session_state.temp_mode
+    mode = st.session_state.get('temp_mode', 'Normal')
     st.subheader(f"📸 Live Session ({mode})")
     
-    # 3.2.1 / 3.2.2 Live Logic
-    col_cam, col_info = st.columns([1, 1])
+    col1, col2 = st.columns([1.5, 1])
     
-    with col_cam:
+    with col1:
+        st.markdown("### 📡 Input Feed")
+        
         # Input Method Toggle
-        input_method = st.radio("Input Method", ["Camera", "Upload Image"], horizontal=True)
+        input_method = st.radio("Select Input Method", ["Camera", "Upload Image"], horizontal=True, label_visibility="collapsed")
         
-        img_file = None
+        img_buffer = None
         if input_method == "Camera":
-            img_file = st.camera_input("Scan Face")
+            img_buffer = st.camera_input("Take photo", label_visibility="collapsed")
         else:
-            img_file = st.file_uploader("Upload Image (JPG/PNG)", type=['jpg', 'jpeg', 'png'], key=f"uploader_{st.session_state.upload_key}")
-            
-        # Advanced Settings Expandable
-        with st.expander("⚙️ Detection Settings"):
-            backend = st.selectbox(
-                "Face Detector", 
-                ["opencv", "ssd", "mtcnn", "retinaface"], 
-                index=1, # Default to SSD (Better than OpenCV/Haar)
-                help="If 'opencv' fails, try 'ssd' or others. (May require install)"
-            )
-            debug_mode = st.checkbox("Show Debug Info", value=True)
-
-    
-    with col_info:
-        # Live Counters
-        df = pd.DataFrame(evt['data'])
-        total = len(df)
-        if not df.empty:
-            m = len(df[df['gender'] == 'Male'])
-            f = len(df[df['gender'] == 'Female'])
-            ratio = f"{m}:{f}"
-        else:
-            ratio = "0:0"
-            
-        st.metric("Total Registered", total)
-        st.metric("Current Ratio (M:F)", ratio)
+            img_buffer = st.file_uploader("Upload Image (JPG/PNG)", type=['jpg', 'jpeg', 'png'], key=f"uploader_{st.session_state.upload_key}")
         
-        if img_file:
-            # PROCESS IMAGE with Caching to ensure Form Persistence
-            # Logic: If image bytes haven't changed, don't re-run DeepFace.
-            # This prevents specific bugs where re-running detection on submission might fail or drift.
+        # State Management for Multi-Person
+        if 'last_photo_hash' not in st.session_state: st.session_state.last_photo_hash = None
+        if 'detected_faces' not in st.session_state: st.session_state.detected_faces = []
+        if 'current_face_idx' not in st.session_state: st.session_state.current_face_idx = 0
+        
+        if img_buffer:
+            bytes_data = img_buffer.getvalue()
+            if st.session_state.last_photo_hash != bytes_data:
+                st.session_state.last_photo_hash = bytes_data
+                
+                with st.spinner("🔍 Detecting faces..."):
+                    image = Image.open(img_buffer)
+                    # Use the face engine
+                    detection_backend = "ssd" # Default
+                    faces = st.session_state.face_engine.process_image(image, detector_backend=detection_backend)
+                    st.session_state.detected_faces = faces
+                    st.session_state.current_face_idx = 0
             
-            bytes_data = img_file.getvalue()
+            faces = st.session_state.detected_faces
+            current_idx = st.session_state.current_face_idx
+            original_image = Image.open(img_buffer)
             
-            # Check if we have a cached result for this exact image
-            # Also check if backend changed, if so force re-process
-            last_backend = st.session_state.get('last_backend', None)
-            
-            if st.session_state.get('last_img_bytes') != bytes_data or last_backend != backend:
-                # New image or new backend -> Process
-                img = Image.open(img_file)
-                st.session_state.last_results = st.session_state.face_engine.process_image(img, detector_backend=backend)
-                st.session_state.last_img_bytes = bytes_data
-                st.session_state.last_img_object = img # Store for display
-                st.session_state.last_backend = backend
-            
-            results = st.session_state.last_results
-            img = st.session_state.get('last_img_object', Image.open(img_file))
-            
-            if not results:
-                st.warning("No face detected.")
+            if not faces:
+                st.warning("⚠️ No faces detected! Try again.")
+                st.image(original_image, use_column_width=True)
+            elif current_idx >= len(faces):
+                st.success("✅ All faces processed for this photo!")
+                st.image(draw_faces(original_image, faces, -1), use_column_width=True)
+                if st.button("📸 Catch Next Batch", use_container_width=True):
+                    st.session_state.last_photo_hash = None
+                    st.session_state.detected_faces = []
+                    # Increment upload key to clear uploader if in use
+                    if input_method == "Upload Image":
+                        st.session_state.upload_key += 1
+                    st.rerun()
             else:
-                face = results[0] # Take first face
-                st.image(img, caption=f"Detected: {face['gender']}", width=200)
+                display_img = draw_faces(original_image, faces, current_idx)
+                st.image(display_img, use_column_width=True)
                 
-                # Check Duplicate
-                if face['is_duplicate']:
-                    dup = face['duplicate_info']
-                    st.error(f"⚠️ Already Registered in {dup['event_id']} as {dup['name']}")
-                    st.write("Do you want to register them anyway?")
-                    
-                # Seat Allocation
-                cluster = evt.get('cluster_size', 1)
-                seat_mgr = SeatingManager(evt['hall_rows'], evt['hall_cols'], cluster_size=cluster)
-                allocated_seat = seat_mgr.allocate_seat(evt['data'], face['gender'])
-                st.success(f"🪑 Allocated Seat: {allocated_seat}")
+    with col2:
+        if img_buffer and st.session_state.detected_faces and st.session_state.current_face_idx < len(st.session_state.detected_faces):
+            faces = st.session_state.detected_faces
+            idx = st.session_state.current_face_idx
+            face = faces[idx]
+            
+            # Crop Face
+            top, right, bottom, left = face['bbox']
+            # Expand crop slightly
+            h, w = original_image.height, original_image.width
+            top = max(0, top - 20); left = max(0, left - 20)
+            bottom = min(h, bottom + 20); right = min(w, right + 20)
+            face_crop = original_image.crop((left, top, right, bottom))
+            
+            st.markdown(f"""
+            <div class="card" style="text-align: center; margin-bottom: 20px;">
+                <h3 style="margin:0;">📝 Person {idx + 1}/{len(faces)}</h3>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            c_img, c_info = st.columns([1, 2])
+            with c_img: st.image(face_crop, width=100)
+            with c_info:
+                st.metric("Gender", face['gender'])
+                st.metric("Confidence", f"{face['confidence']:.1f}%" if isinstance(face['confidence'], (int, float)) else "N/A")
+
+            # Seat Allocation
+            cluster = evt.get('cluster_size', 1)
+            seat_mgr = SeatingManager(evt['hall_rows'], evt['hall_cols'], cluster_size=cluster)
+            # Use a temporary list including current session additions if needed, but for now just evt['data']
+            allocated_seat = seat_mgr.allocate_seat(evt['data'], face['gender'])
+            st.info(f"📍 Seat: **{allocated_seat}**")
+            
+            # Registration Form
+            with st.form(key=f"reg_form_{idx}"):
+                if "Privacy" in mode:
+                    st.caption("🔒 Privacy Mode: Name hidden")
+                    name = f"Anon_{generate_code()}"
+                    pid = "N/A"; branch = "N/A"; age = 0
+                else:
+                    name = st.text_input("Name", key=f"name_{idx}")
+                    pid = st.text_input("ID", key=f"id_{idx}")
+                    c_b, c_a = st.columns(2)
+                    branch = c_b.text_input("Branch", key=f"br_{idx}")
+                    age = c_a.number_input("Age", 16, 60, 18, key=f"ag_{idx}")
                 
-                # Registration Form
-                with st.form("reg_form_process", clear_on_submit=True):
-                    st.write("### Participant Details")
-                    
-                    if "Privacy" in mode:
-                        # Privacy Mode
-                        st.info("🔒 Privacy Mode: Only recording Gender & Seat")
-                        submitted = st.form_submit_button("Register & Save")
-                        if submitted:
-                            evt['data'].append({
-                                "sl_no": len(evt['data'])+1,
-                                "gender": face['gender'],
-                                "seat": allocated_seat,
-                                "timestamp": str(datetime.now())
-                            })
-                            st.success("Saved!")
-                            st.session_state.last_img_bytes = None # Clear cache to force next
-                            st.session_state.upload_key += 1
-                            time.sleep(0.5)
-                            st.rerun()
-                    else:
-                        # Normal Mode
-                        name = st.text_input("Name")
-                        pid = st.text_input("ID")
-                        branch = st.text_input("Branch")
-                        age = st.number_input("Age", 0, 100, 18)
+                if st.form_submit_button("✅ Register & Next", use_container_width=True, type="primary"):
+                    if name:
+                        # Save Data
+                        record = {
+                            "sl_no": len(evt['data'])+1,
+                            "gender": face['gender'],
+                            "seat": allocated_seat,
+                            "name": name,
+                            "id": pid,
+                            "branch": branch,
+                            "age": age,
+                            "encoding": face['encoding'], # Store encoding
+                            "timestamp": str(datetime.now())
+                        }
+                        evt['data'].append(record)
                         
-                        submitted = st.form_submit_button("Register & Save")
-                        if submitted:
-                            if name:
-                                evt['data'].append({
-                                    "sl_no": len(evt['data'])+1,
-                                    "gender": face['gender'],
-                                    "seat": allocated_seat,
-                                    "name": name,
-                                    "id": pid,
-                                    "branch": branch,
-                                    "age": age,
-                                    "encoding": face['encoding'],
-                                    "timestamp": str(datetime.now())
-                                })
-                                # Add to known faces
-                                st.session_state.face_engine.known_encodings.append(np.array(face['encoding']))
-                                st.session_state.face_engine.known_ids.append({'name': name, 'event_id': st.session_state.current_event})
-                                
-                                st.success(f"Saved {name}!")
-                                st.session_state.last_img_bytes = None # Clear cache
-                                st.session_state.upload_key += 1
-                                time.sleep(0.5)
-                                st.rerun()
-                            else:
-                                st.error("❌ Name is required!")
-    
+                        # Add to known faces logic from previous code
+                        if "Privacy" not in mode:
+                            st.session_state.face_engine.known_encodings.append(np.array(face['encoding']))
+                            st.session_state.face_engine.known_ids.append({'name': name, 'event_id': st.session_state.current_event})
+
+                        st.success(f"✅ Saved {name}!")
+                        st.session_state.current_face_idx += 1
+                        st.rerun()
+                    else:
+                        st.error("Name required")
+        else:
+            st.markdown("### 📋 Session Log")
+            if evt['data']:
+                df = pd.DataFrame(evt['data'])
+                st.dataframe(df.iloc[::-1].head(5)[['name', 'gender', 'seat']], hide_index=True, use_container_width=True)
+            else:
+                st.info("Waiting for registrations...")
+
     st.markdown("---")
-    if st.button("End Session and Save"):
+    if st.button("End Session"):
         st.session_state.subpage = None
         st.rerun()
 
@@ -446,80 +664,77 @@ def database_view(evt):
 
 def dashboard_view(evt):
     st.subheader("📊 Analytics Dashboard")
-    # Filters
     st.write("Filter Participants:")
     age_range = st.slider("Select Age Range", 0, 100, (0, 100))
     
     if evt['data']:
         df = pd.DataFrame(evt['data'])
-        # Filter Logic
         if 'age' in df.columns:
-            # Handle NaN/None in age for privacy mode entries
             df['age'] = pd.to_numeric(df['age'], errors='coerce').fillna(0)
             df = df[(df['age'] >= age_range[0]) & (df['age'] <= age_range[1])]
             
         # Stats
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Males", len(df[df['gender']=='Male']))
-        c2.metric("Females", len(df[df['gender']=='Female']))
-        c3.metric("Non-Binary", len(df[df['gender']=='Non-Binary']))
+        st.markdown("### Key Metrics")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total", len(df))
+        c2.metric("Males", len(df[df['gender']=='Male']))
+        c3.metric("Females", len(df[df['gender']=='Female']))
+        c4.metric("Non-Binary", len(df[df['gender']=='Non-Binary']))
         
-        # Visual Hall Map
-        st.write("### 🏟️ Hall Seating Map")
-        st.caption("🟦 Male | 🟪 Female | 🟨 Non-Binary")
+        st.markdown("---")
         
-        # Create Grid
+        # Plotly Charts
+        c_pie, c_bar = st.columns(2)
+        with c_pie:
+            st.subheader("Gender Distribution")
+            gender_counts = df['gender'].value_counts().reset_index()
+            gender_counts.columns = ['Gender', 'Count']
+            fig_pie = px.pie(gender_counts, values='Count', names='Gender', 
+                             color='Gender',
+                             color_discrete_map={'Male':'#6C5DD3', 'Female':'#FF5A5F', 'Non-Binary':'#A0D2EB'},
+                             hole=0.4)
+            fig_pie.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="white"))
+            st.plotly_chart(fig_pie, use_container_width=True)
+            
+        with c_bar:
+            st.subheader("Age vs Gender")
+            if 'age' in df.columns:
+                 fig_bar = px.histogram(df, x='gender', y='age', color='gender', 
+                                    histfunc='avg', title="Average Age by Gender",
+                                    color_discrete_map={'Male':'#6C5DD3', 'Female':'#FF5A5F', 'Non-Binary':'#A0D2EB'})
+                 fig_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="white"))
+                 st.plotly_chart(fig_bar, use_container_width=True)
+
+        # Seating Heatmap using Plotly
+        st.markdown("### 🏟️ Hall Seating Heatmap")
         rows = evt['hall_rows']
         cols = evt['hall_cols']
+        grid = np.zeros((rows, cols))
         
-        # Prepare grid data
-        seat_grid = {} # (r,c) -> gender/info
         for p in evt['data']:
             try:
-                # Parse "Row A, Seat 1"
                 parts = p['seat'].split(',')
-                # Row A -> 0, Row B -> 1
                 r_idx = ord(parts[0].replace("Row ", "").strip()) - 65
                 c_idx = int(parts[1].replace("Seat ", "").strip()) - 1
-                seat_grid[(r_idx, c_idx)] = p
+                
+                val = 0.5
+                if p['gender'] == 'Male': val = 1
+                elif p['gender'] == 'Female': val = 2
+                
+                if 0 <= r_idx < rows and 0 <= c_idx < cols:
+                    grid[r_idx][c_idx] = val
             except: pass
             
-        # Render Grid using Columns
-        for r in range(rows):
-            # Create a container for the row to keep it tight
-            row_cols = st.columns(cols)
-            for c in range(cols):
-                participant = seat_grid.get((r, c))
-                
-                with row_cols[c]:
-                    if participant:
-                        g = participant['gender']
-                        color_hex = "#3b82f6" if g == 'Male' else "#d946ef" if g == 'Female' else "#eab308" # Blue, Pink, Yellow
-                        
-                        # Tooltip info
-                        info = f"{participant.get('name', 'Unknown')}"
-                        if 'id' in participant: info += f"\nID: {participant['id']}"
-                        
-                        st.markdown(f'''
-                        <div title="{info}" style="
-                            width: 100%; 
-                            height: 30px; 
-                            background-color: {color_hex}; 
-                            border-radius: 4px;
-                            border: 1px solid rgba(255,255,255,0.5);
-                            cursor: pointer;">
-                        </div>
-                        ''', unsafe_allow_html=True)
-                    else:
-                        st.markdown(f'''
-                        <div style="
-                            width: 100%; 
-                            height: 30px; 
-                            background-color: rgba(255,255,255,0.1); 
-                            border-radius: 4px;
-                            border: 1px dashed rgba(255,255,255,0.3);">
-                        </div>
-                        ''', unsafe_allow_html=True)
+        fig_heat = px.imshow(grid, 
+                        labels=dict(x="Seat Column", y="Row", color="Gender Code"),
+                        x=[f"S{i+1}" for i in range(cols)],
+                        y=[f"Row {chr(65+i)}" for i in range(rows)],
+                        color_continuous_scale=[[0, 'grey'], [0.5, '#A0D2EB'], [1, '#6C5DD3'], [2, '#FF5A5F']],
+                        aspect="auto")
+        fig_heat.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="white"))
+        fig_heat.update_traces(showscale=False)
+        st.plotly_chart(fig_heat, use_container_width=True)
+        st.caption("Grey: Empty | Purple: Male | Pink: Female | Blue: Other")
         
         # 3. Download
         st.markdown("---")
@@ -598,42 +813,172 @@ def team_analysis(evt):
             for i, t in enumerate(teams):
                 st.write(f"**Team {i+1}**: {[p['gender'] for p in t]}")
 
-def upload_csv(evt):
-    st.subheader("📂 Upload CSV")
-    st.info("Ensure CSV has columns: name, gender (Male/Female), age, etc.")
-    uploaded = st.file_uploader("Choose CSV", type='csv')
-    if uploaded:
-        try:
-            new_df = pd.read_csv(uploaded)
-            st.write("Preview:", new_df.head())
+def batch_upload_page(evt):
+    st.subheader("📂 Batch Upload Multiple Pictures")
+    st.info("Select a folder of images to auto-register participants.")
+    st.caption("Naming convention: P1, P2... (If multiple: P1-1M, P1-2F...)")
+    
+    uploaded_files = st.file_uploader("Choose images...", accept_multiple_files=True, type=['jpg', 'png', 'jpeg'])
+    
+    if uploaded_files:
+        # 1. Initial Capacity Check (Image vs Seats) strategy
+        # We did a rough check before, but now we'll do it smarter or just keep rough check
+        # User requested: "number of seats < number of images -> Error"
+        rows = evt['hall_rows']
+        cols = evt['hall_cols']
+        total_seats = rows * cols
+        current_data_count = len(evt['data'])
+        available_seats = total_seats - current_data_count
+        new_files_count = len(uploaded_files)
+        
+        if new_files_count > available_seats:
+            st.error(f"❌ Too less seats in the hall, please add more seats! (Available: {available_seats}, Uploading: {new_files_count} files)")
+            return
             
-            # Map columns logic (simplified)
-            required = ['name', 'gender']
-            if all(col in new_df.columns.str.lower() for col in required):
-                 # Case insensitive alignment
-                 new_df.columns = new_df.columns.str.lower()
-                 
-                 if st.button("Import Data"):
-                     records = new_df.to_dict('records')
-                     seating_mgr = SeatingManager(evt['hall_rows'], evt['hall_cols'])
-                     
-                     count = 0
-                     for rec in records:
-                         # Allocate seat for imported data too!
-                         seat = seating_mgr.allocate_seat(evt['data'], rec.get('gender', 'Male'))
-                         rec['seat'] = seat
-                         rec['sl_no'] = len(evt['data']) + 1
-                         rec['timestamp'] = str(datetime.now())
-                         evt['data'].append(rec)
-                         count += 1
-                         
-                     st.success(f"✅ Imported {count} records!")
-                     time.sleep(1)
-                     st.rerun()
-            else:
-                st.warning(f"CSV must contain {required} columns.")
-        except Exception as e:
-            st.error(f"Error reading CSV: {e}")
+        st.write(f"Selected {new_files_count} images. Ready to process.")
+        
+        if st.button("🚀 Process & Register All", type="primary"):
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            cluster = evt.get('cluster_size', 1)
+            seat_mgr = SeatingManager(rows, cols, cluster_size=cluster)
+            
+            # Determine starting P number
+            max_p = 0
+            for d in evt['data']:
+                name = d.get('name', '')
+                # Extract number from P<Number>...
+                if name.startswith('P'):
+                    # specific parsing to handle P1, P1-1M etc
+                    # Just take the first digit sequence
+                    import re
+                    match = re.search(r'P(\d+)', name)
+                    if match:
+                        num = int(match.group(1))
+                        if num > max_p: max_p = num
+            
+            next_p_num = max_p + 1
+            processed_count = 0
+            warnings_list = []
+            
+            for i, img_file in enumerate(uploaded_files):
+                status_text.text(f"Processing image {i+1}/{new_files_count}...")
+                current_p_label_base = next_p_num + processed_count # P number based on actual added count to keep sequence? 
+                # Actually, if we skip, the P number shouldn't increment if we want P1, P2... but user said P4 repeated.
+                # If P4 is repeated, we just say P4 repeated.
+                # Let's keep P_num incrementing for every *file* attempt or just successful ones?
+                # Usually successful ones.
+                
+                try:
+                    # Detect
+                    image = Image.open(img_file)
+                    faces = st.session_state.face_engine.process_image(image, detector_backend="ssd")
+                    
+                    if faces:
+                        # Check strict capacity before adding
+                        # Note: We check capacity based on *potential* adds. 
+                        # If duplicate, we won't add, so we don't consume seat.
+                        # extra_seats_needed = len(faces) # worst case
+                        # available = total_seats - len(evt['data'])
+                        # if extra_seats_needed > available: ... 
+                        # For now, let's just check individually inside loop to be safe and accurate
+                        
+                        is_multi = len(faces) > 1
+                        
+                        for f_idx, face in enumerate(faces):
+                            # DUPLICATE CHECK
+                            new_encoding = np.array(face['encoding'])
+                            known_encs = st.session_state.face_engine.known_encodings
+                            known_ids = st.session_state.face_engine.known_ids
+                            current_evt_id = st.session_state.current_event
+                            
+                            match_found = False
+                            matched_name = ""
+                            
+                            # Filter for current event only (or global? User said "Person P4 repeated", P4 implies current event context)
+                            # We'll check against ALL known faces in THIS event
+                            if len(known_encs) > 0:
+                                # Create list of encodings for this event
+                                event_indices = [idx for idx, meta in enumerate(known_ids) if meta['event_id'] == current_evt_id]
+                                if event_indices:
+                                    event_encs = [known_encs[idx] for idx in event_indices]
+                                    
+                                    # Calculate distances
+                                    # simple euclidean distance
+                                    distances = np.linalg.norm(event_encs - new_encoding, axis=1)
+                                    min_dist_idx = np.argmin(distances)
+                                    if distances[min_dist_idx] < 0.5: # Strict threshold for duplicate
+                                        match_found = True
+                                        original_idx = event_indices[min_dist_idx]
+                                        matched_name = known_ids[original_idx]['name']
+
+                            if match_found:
+                                warnings_list.append(f"Person **{matched_name}** has been repeated in *{img_file.name}*, he/she will be registered only once.")
+                                continue # Skip registration
+                                
+                            # If not duplicate, CHECK SEATS
+                            if len(evt['data']) >= total_seats:
+                                st.error(f"❌ Hall Full! Stopped at {img_file.name}. (Seat limit reached)")
+                                # Stop everything? or just this face?
+                                # Break out of file loop
+                                raise StopIteration("Hall Full")
+
+                            gender = face['gender']
+                            
+                            # Label Logic
+                            # We use len(evt['data']) + 1 to ensure sequential naming based on ACTUAL stored data
+                            # This handles the skipping correctly (e.g. if we skip P4 duplicate, next new person becomes P5 is wrong? 
+                            # No, if P4 is repeated, it's P4.
+                            # Next NEW person should be P5.
+                            # So using len + 1 is safe.
+                            next_sl = len(evt['data']) + 1
+                            
+                            if is_multi:
+                                g_code = gender[0].upper()
+                                p_label = f"P{next_sl}-{f_idx+1}{g_code}"
+                            else:
+                                p_label = f"P{next_sl}"
+                            
+                            # Allocate Seat
+                            seat = seat_mgr.allocate_seat(evt['data'], gender)
+                            
+                            # Register
+                            record = {
+                                "sl_no": next_sl,
+                                "gender": gender,
+                                "seat": seat,
+                                "name": p_label, 
+                                "id": "Batch_Upload",
+                                "branch": "N/A",
+                                "age": 0, 
+                                "encoding": face['encoding'],
+                                "timestamp": str(datetime.now())
+                            }
+                            evt['data'].append(record)
+                            
+                            # Add to known faces
+                            st.session_state.face_engine.known_encodings.append(np.array(face['encoding']))
+                            st.session_state.face_engine.known_ids.append({'name': p_label, 'event_id': current_evt_id})
+                            
+                            processed_count += 1
+                    else:
+                        st.warning(f"⚠️ No face detected in {img_file.name}. Skipped.")
+                        
+                except StopIteration:
+                    break
+                except Exception as e:
+                    st.error(f"Error processing {img_file.name}: {e}")
+                
+                progress_bar.progress((i + 1) / new_files_count)
+            
+            if warnings_list:
+                for w in warnings_list:
+                    st.warning(w)
+                    
+            st.success(f"✅ Batch Processing Complete! Registered {processed_count} new participants.")
+            time.sleep(3) # Give time to read warnings
+            st.rerun()
 
 def create_folder():
     render_header()
@@ -671,26 +1016,66 @@ def view_folders():
             # Aggregate Stats
             if fdata['events']:
                 total = 0
-                m = 0
-                f = 0
+                gender_counts_folder = {'Male': 0, 'Female': 0, 'Non-Binary': 0}
+                event_stats = []
+
                 for eid in fdata['events']:
+                    if eid not in st.session_state.events: continue
                     d = st.session_state.events[eid]['data']
-                    total += len(d)
-                    m += len([x for x in d if x['gender'] == 'Male'])
-                    f += len([x for x in d if x['gender'] == 'Female'])
+                    count = len(d)
+                    total += count
+                    
+                    m = len([x for x in d if x['gender'] == 'Male'])
+                    f = len([x for x in d if x['gender'] == 'Female'])
+                    nb = len([x for x in d if x['gender'] == 'Non-Binary'])
+                    
+                    gender_counts_folder['Male'] += m
+                    gender_counts_folder['Female'] += f
+                    gender_counts_folder['Non-Binary'] += nb
+                    
+                    event_stats.append({
+                        "Event": st.session_state.events[eid]['name'],
+                        "Attendees": count
+                    })
                 
                 st.write("### 📊 Aggregated Stats")
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Total Participants", total)
-                c2.metric("Total Males", m)
-                c3.metric("Total Females", f)
+                c2.metric("Total Males", gender_counts_folder['Male'])
+                c3.metric("Total Females", gender_counts_folder['Female'])
+                
+                # Plotly Charts
+                cp1, cp2 = st.columns(2)
+                with cp1:
+                    df_gender = pd.DataFrame([{"Gender": k, "Count": v} for k, v in gender_counts_folder.items() if v > 0])
+                    if not df_gender.empty:
+                        fig_pie = px.pie(df_gender, values='Count', names='Gender', 
+                                         color='Gender',
+                                         color_discrete_map={'Male':'#6C5DD3', 'Female':'#FF5A5F', 'Non-Binary':'#A0D2EB'},
+                                         hole=0.4)
+                        fig_pie.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="white"), margin=dict(t=20, b=20))
+                        st.plotly_chart(fig_pie, use_container_width=True)
+                    else:
+                        st.info("No gender data available.")
+                        
+                with cp2:
+                    if event_stats:
+                        df_evts = pd.DataFrame(event_stats)
+                        fig_bar = px.bar(df_evts, x='Event', y='Attendees', color='Attendees',
+                                         color_continuous_scale=['#A0D2EB', '#6C5DD3'])
+                        fig_bar.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="white"), margin=dict(t=20, b=20))
+                        st.plotly_chart(fig_bar, use_container_width=True)
+                    else:
+                        st.info("No event data available.")
                 
                 st.write("### 📂 Events in this Folder")
                 for eid in fdata['events']:
-                    if st.button(f"Go to {st.session_state.events[eid]['name']}", key=f"goto_{fname}_{eid}"):
-                         st.session_state.current_event = eid
-                         st.session_state.page = "event_menu"
-                         st.rerun()
+                    if eid in st.session_state.events:
+                        evt_name = st.session_state.events[eid]['name']
+                        if st.button(f"Go to {evt_name}", key=f"goto_{fname}_{eid}"):
+                             st.session_state.current_event = eid
+                             st.session_state.page = "event_menu"
+                             st.rerun()
 
 try:
     from utils import SeatingManager, TeamManager, TeamBalancer
