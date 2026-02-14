@@ -12,6 +12,7 @@ try:
 except ImportError:
     FPDF = None
     print("Warning: FPDF not found. Install 'fpdf' for PDF reports.")
+import base64
 import plotly.express as px
 import plotly.graph_objects as go
 import cv2
@@ -847,31 +848,55 @@ def dashboard_view(evt):
                 try:
                     pdf = FPDF()
                     pdf.add_page()
-                    pdf.set_font("Arial", size=12)
+                    pdf.set_font("Arial", size=16)
                     pdf.cell(200, 10, txt=f"Event Report: {evt['name']}", ln=1, align='C')
-                    pdf.cell(200, 10, txt=f"Date: {evt['date']}", ln=1, align='C')
-                    pdf.cell(200, 10, txt=f"Total: {len(df)} | M: {len(df[df['gender']=='Male'])} | F: {len(df[df['gender']=='Female'])}", ln=1, align='C')
-                    pdf.ln(10)
+                    
+                    pdf.set_font("Arial", size=10)
+                    pdf.cell(200, 10, txt=f"Date: {evt['date']} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=1, align='C')
+                    
+                    # Metrics
+                    m_count = len(df[df['gender']=='Male'])
+                    f_count = len(df[df['gender']=='Female'])
+                    nb_count = len(df) - m_count - f_count
+                    avg_age = df['age'].mean() if not df['age'].empty else 0
+                    
+                    pdf.ln(5)
+                    pdf.set_font("Arial", style='B', size=12)
+                    pdf.cell(0, 10, f"Summary Statistics", ln=1)
+                    pdf.set_font("Arial", size=10)
+                    pdf.cell(0, 7, f"Total Attendees: {len(df)}", ln=1)
+                    pdf.cell(0, 7, f"Male: {m_count} | Female: {f_count} | Non-Binary: {nb_count}", ln=1)
+                    pdf.cell(0, 7, f"Average Age: {avg_age:.1f}", ln=1)
+                    pdf.ln(5)
                     
                     # Table Header
-                    col_width = 30
+                    pdf.set_font("Arial", style='B', size=10)
+                    col_widths = [15, 60, 30, 60, 20] # SL, Name, Gender, Seat, Age
                     headers = ['SL', 'Name', 'Gender', 'Seat', 'Age']
-                    for h in headers:
-                        pdf.cell(col_width, 10, h, 1)
+                    
+                    for i, h in enumerate(headers):
+                        pdf.cell(col_widths[i], 8, h, 1)
                     pdf.ln()
                     
                     # Table Rows
+                    pdf.set_font("Arial", size=9)
                     for _, row in df.iterrows():
-                        pdf.cell(col_width, 10, str(row.get('sl_no', '')), 1)
-                        pdf.cell(col_width, 10, str(row.get('name', 'N/A')[:12]), 1) # Truncate
-                        pdf.cell(col_width, 10, str(row.get('gender', '')), 1)
-                        pdf.cell(col_width, 10, str(row.get('seat', '')), 1)
-                        pdf.cell(col_width, 10, str(row.get('age', '')), 1)
+                        pdf.cell(col_widths[0], 8, str(row.get('sl_no', '')), 1)
+                        # Truncate Name to fit
+                        name_txt = str(row.get('name', 'N/A'))
+                        if len(name_txt) > 25: name_txt = name_txt[:22] + "..."
+                        pdf.cell(col_widths[1], 8, name_txt, 1)
+                        
+                        pdf.cell(col_widths[2], 8, str(row.get('gender', '')), 1)
+                        pdf.cell(col_widths[3], 8, str(row.get('seat', 'Unassigned')), 1)
+                        pdf.cell(col_widths[4], 8, str(row.get('age', '')), 1)
                         pdf.ln()
                         
-                    # Bytes logic
-                    b64 = base64.b64encode(pdf.output(dest='S').encode('latin-1')).decode()
-                    href = f'<a href="data:application/octet-stream;base64,{b64}" download="report.pdf">Download PDF</a>'
+                    # Output
+                    pdf_content = pdf.output(dest='S').encode('latin-1')
+                    b64 = base64.b64encode(pdf_content).decode()
+                    href = f'<a href="data:application/octet-stream;base64,{b64}" download="EventReport_{evt["name"]}.pdf" style="background-color: #7F5AF0; color: white; padding: 10px 20px; border-radius: 10px; text-decoration: none; display: block; text-align: center; margin-top: 10px;">Download PDF Report</a>'
+                    st.success("✅ PDF Generated!")
                     st.markdown(href, unsafe_allow_html=True)
                 
                 except Exception as e:
