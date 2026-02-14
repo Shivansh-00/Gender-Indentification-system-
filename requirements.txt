@@ -6,3 +6,4 @@ deepface
 Pillow
 fpdf
 tf-keras
+kaleido

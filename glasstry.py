@@ -13,6 +13,7 @@ except ImportError:
     FPDF = None
     print("Warning: FPDF not found. Install 'fpdf' for PDF reports.")
 import base64
+import tempfile
 import plotly.express as px
 import plotly.graph_objects as go
 import cv2
@@ -868,6 +869,106 @@ def dashboard_view(evt):
                     pdf.cell(0, 7, f"Male: {m_count} | Female: {f_count} | Non-Binary: {nb_count}", ln=1)
                     pdf.cell(0, 7, f"Average Age: {avg_age:.1f}", ln=1)
                     pdf.ln(5)
+
+                    # --- CHARTS ---
+                    try:
+                        # Pie Chart
+                        df_gender = pd.DataFrame([{"Gender": k, "Count": v} for k, v in {"Male": m_count, "Female": f_count, "Non-Binary": nb_count}.items() if v > 0])
+                        if not df_gender.empty:
+                            fig_pie = px.pie(df_gender, values='Count', names='Gender', color='Gender',
+                                             color_discrete_map={'Male':'#6C5DD3', 'Female':'#FF5A5F', 'Non-Binary':'#A0D2EB'})
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_pie:
+                                fig_pie.write_image(tmp_pie.name)
+                                pdf.image(tmp_pie.name, x=10, y=pdf.get_y(), w=80)
+                        
+                        # Age Bar Chart
+                        age_counts = df['age'].value_counts().reset_index()
+                        if not age_counts.empty:
+                            age_counts.columns = ['Age', 'Count']
+                            fig_bar = px.bar(age_counts, x='Age', y='Count', color='Count', color_continuous_scale=['#A0D2EB', '#6C5DD3'])
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_bar:
+                                fig_bar.write_image(tmp_bar.name)
+                                pdf.image(tmp_bar.name, x=100, y=pdf.get_y() - 0, w=80) # Side by side? 
+                                
+                        pdf.ln(60) # Move down past images
+                    except Exception as e:
+                        pdf.cell(0, 10, f"(Charts unavailable: Install 'kaleido')", ln=1)
+                        # st.error(f"Chart Error: {e}")
+
+                    # --- SEATING GRID ---
+                    pdf.add_page()
+                    pdf.set_font("Arial", style='B', size=14)
+                    pdf.cell(0, 10, "Seating Arrangement", ln=1, align='C')
+                    pdf.ln(5)
+                    
+                    # Re-build seat map
+                    rows_h = evt.get('hall_rows', 5)
+                    cols_h = evt.get('hall_cols', 10)
+                    seat_map_pdf = {}
+                    for p in evt['data']:
+                        try:
+                            s_str = p.get('seat', '')
+                            if s_str and "Row" in s_str:
+                                parts = s_str.split(',')
+                                r_idx = ord(parts[0].replace("Row ", "").strip()) - 65
+                                c_idx = int(parts[1].replace("Seat ", "").strip()) - 1
+                                seat_map_pdf[(r_idx, c_idx)] = p
+                        except: pass
+                        
+                    # Draw Grid
+                    cell_w = 15
+                    cell_h = 10
+                    start_x = 10
+                    start_y = pdf.get_y()
+                    
+                    pdf.set_font("Arial", size=6)
+                    
+                    for r in range(rows_h):
+                        # check page break
+                        if start_y + (r+1)*cell_h > 270:
+                             pdf.add_page()
+                             start_y = 20
+                        
+                        current_y = start_y + r*cell_h
+                        # Row Label
+                        pdf.set_xy(start_x, current_y)
+                        pdf.set_text_color(0, 0, 0)
+                        pdf.cell(5, cell_h, chr(65+r), 0, 0, 'C')
+                        
+                        for c in range(cols_h):
+                            x = start_x + 8 + c*cell_w
+                            # check overflow width
+                            if x + cell_w > 200: continue # Clip if too wide
+                            
+                            p_data = seat_map_pdf.get((r, c))
+                            
+                            # Default fill (Grey/Empty)
+                            # FPDF needs RGB 0-255
+                            pdf.set_fill_color(245, 245, 245) 
+                            pdf.set_draw_color(200, 200, 200)
+                            
+                            txt = ""
+                            if p_data:
+                                gender = p_data.get('gender', '')
+                                if gender == 'Male': pdf.set_fill_color(200, 200, 255) # Light Purple
+                                elif gender == 'Female': pdf.set_fill_color(255, 200, 200) # Light Pink
+                                else: pdf.set_fill_color(200, 255, 255) # Cyan
+                                
+                                txt = p_data.get('name', '')[:6] # Truncate heavily
+                            
+                            pdf.rect(x, current_y, cell_w, cell_h, 'DF')
+                            
+                            if txt:
+                                pdf.set_xy(x, current_y)
+                                pdf.set_text_color(0, 0, 0)
+                                pdf.cell(cell_w, cell_h, txt, 0, 0, 'C')
+                                
+                    pdf.ln(10)
+                    
+                    pdf.add_page()
+                    pdf.set_font("Arial", style='B', size=14)
+                    pdf.cell(0, 10, "Participant List", ln=1, align='C')
+                    pdf.ln(5)
                     
                     # Table Header
                     pdf.set_font("Arial", style='B', size=10)
@@ -1308,26 +1409,62 @@ def team_management(evt):
                     st.error("Name is required.")
         
         st.write(f"### Team Members ({len(evt['team_members'])})")
-        if evt['team_members']:
-            df_team = pd.DataFrame(evt['team_members'])
-            # Flatten skills for display
-            display_data = []
-            for m in evt['team_members']:
-                d = {'Name': m['name'], 'Gender': m['gender']}
+        
+        # Prepare Display Data
+        display_data = []
+        for m in evt['team_members']:
+            d = {'ID': m['id'], 'Name': m['name'], 'Gender': m['gender']}
+            
+            # Handle Skills Display (List or Dict)
+            skills = m.get('skills', [])
+            if isinstance(skills, dict):
+                    # Old format: {skill: rating}
+                    d['Skills'] = ", ".join([f"{k} ({v})" for k,v in skills.items()])
+            elif isinstance(skills, list):
+                    # New format: [skill, skill]
+                    d['Skills'] = ", ".join([str(s) for s in skills])
+            else:
+                    d['Skills'] = str(skills)
+            
+            display_data.append(d)
+        
+        if not display_data:
+            st.info("No members added yet.")
+        else:
+            # Editing Toggle
+            if st.toggle("Enable Editing"):
+                pwd = st.text_input("Enter Event Password to Edit", type="password")
+                real_pwd = evt.get('password', 'admin') # Default to admin if not set
                 
-                # Handle Skills Display (List or Dict)
-                skills = m.get('skills', [])
-                if isinstance(skills, dict):
-                     # Old format: {skill: rating}
-                     d['Skills'] = ", ".join([f"{k} ({v})" for k,v in skills.items()])
-                elif isinstance(skills, list):
-                     # New format: [skill, skill]
-                     d['Skills'] = ", ".join([str(s) for s in skills])
-                else:
-                     d['Skills'] = str(skills)
-                
-                display_data.append(d)
-            st.dataframe(pd.DataFrame(display_data))
+                if pwd == real_pwd:
+                    st.success("🔓 Editing Enabled")
+                    df_edit = pd.DataFrame(display_data)
+                    
+                    edited_df = st.data_editor(df_edit, num_rows="dynamic", key="team_editor")
+                    
+                    if st.button("💾 Save Changes", type="primary"):
+                        # Reconstruct team_members list
+                        new_members = []
+                        for _, row in edited_df.iterrows():
+                            # Parse Skills back to list
+                            s_str = row.get('Skills', '')
+                            # Simple comma split
+                            s_list = [s.strip() for s in s_str.split(',') if s.strip()]
+                            
+                            new_members.append({
+                                'id': row.get('ID', generate_code()), # Keep ID or gen new if added
+                                'name': row.get('Name', 'Unknown'),
+                                'gender': row.get('Gender', 'Non-Binary'),
+                                'skills': s_list
+                            })
+                        
+                        evt['team_members'] = new_members
+                        st.success("✅ Changes Saved!")
+                        st.rerun()
+                elif pwd:
+                    st.error("❌ Incorrect Password")
+            else:
+                st.dataframe(pd.DataFrame(display_data))
 
     # TAB 3: ALLOCATE
     with tab3:
