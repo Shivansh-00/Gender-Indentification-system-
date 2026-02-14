@@ -1,10 +1,11 @@
 streamlit
 pandas
 numpy
-opencv-python
+opencv-python-headless
 deepface
 Pillow
 fpdf
 tf-keras
 kaleido
 supabase
+plotly
