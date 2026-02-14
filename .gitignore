@@ -1,1 +1,4 @@
 __pycache__
+.streamlit/secrets.toml
+setup_db.py
+*.pyc

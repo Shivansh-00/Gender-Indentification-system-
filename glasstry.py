@@ -26,18 +26,69 @@ except ImportError as e:
     st.error(f"Missing modules: {e}")
     st.stop()
 
+import db  # Supabase database layer
+
 # --- STATE INITIALIZATION ---
 if 'face_engine' not in st.session_state: st.session_state.face_engine = FaceEngine()
-if 'main_folders' not in st.session_state: st.session_state.main_folders = {} # {folder_name: {date, events: []}}
+if 'main_folders' not in st.session_state: st.session_state.main_folders = {}
 if 'events' not in st.session_state: st.session_state.events = {} 
-# Event structure: {id: {name, date, password, hall_rows, hall_cols, data: []}}
 if 'current_user' not in st.session_state: st.session_state.current_user = None
+if 'user_id' not in st.session_state: st.session_state.user_id = None
 if 'page' not in st.session_state: st.session_state.page = "login"
 if 'current_event' not in st.session_state: st.session_state.current_event = None
 if 'subpage' not in st.session_state: st.session_state.subpage = None
-if 'auth_stage' not in st.session_state: st.session_state.auth_stage = 0 # 0: Login, 1: 2FA, 2: Access
+if 'auth_stage' not in st.session_state: st.session_state.auth_stage = 0
 if 'verification_code' not in st.session_state: st.session_state.verification_code = None
 if 'upload_key' not in st.session_state: st.session_state.upload_key = 0
+if 'db_loaded' not in st.session_state: st.session_state.db_loaded = False
+
+def load_from_db():
+    """Sync events and folders from Supabase into session state."""
+    uid = st.session_state.user_id
+    if not uid: return
+    
+    # Load events
+    events_raw = db.get_events(uid)
+    for e in events_raw:
+        eid = e['id']
+        if eid not in st.session_state.events:
+            tm = e.get('team_members', '[]')
+            if isinstance(tm, str):
+                try: tm = __import__('json').loads(tm)
+                except: tm = []
+            elif tm is None: tm = []
+            
+            rl = e.get('roles', '[]')
+            if isinstance(rl, str):
+                try: rl = __import__('json').loads(rl)
+                except: rl = {}
+            elif rl is None: rl = {}
+            
+            st.session_state.events[eid] = {
+                'name': e.get('name', ''),
+                'date': e.get('date', ''),
+                'password': e.get('password', ''),
+                'hall_rows': e.get('hall_rows', 5),
+                'hall_cols': e.get('hall_cols', 10),
+                'cluster_size': e.get('cluster_size', 1),
+                'data': db.get_attendees(eid),
+                'roles': rl if isinstance(rl, dict) else {},
+                'team_members': tm if isinstance(tm, list) else []
+            }
+    
+    # Load folders
+    folders_raw = db.get_folders(uid)
+    for f in folders_raw:
+        fname = f.get('name', '')
+        if fname not in st.session_state.main_folders:
+            folder_event_ids = db.get_folder_events(f['id'])
+            st.session_state.main_folders[fname] = {
+                'date': f.get('date', ''),
+                'events': folder_event_ids,
+                'db_id': f['id']
+            }
+    
+    st.session_state.db_loaded = True
 
 st.set_page_config(page_title="Gender Attendance AI", layout="wide")
 
@@ -330,21 +381,48 @@ def login_page():
         st.markdown('<div class="login-subtitle">Vision Beyond Bias. Seeking Equality. Shaping Fairness</div>', unsafe_allow_html=True)
         
         if st.session_state.auth_stage == 0:
+            auth_mode = st.radio("Choose", ["Sign In", "Register"], horizontal=True, label_visibility="collapsed")
+            
             username = st.text_input("Username")
             password = st.text_input("Password", type="password")
             
-            if st.button("Sign In", type="primary", use_container_width=True):
-                if username == "host" and password == "123":
-                    st.session_state.current_user = username
-                    st.success("✅ Signed In!")
-                    st.session_state.page = "home"
-                    time.sleep(0.5)
-                    st.rerun()
-                else:
-                    st.error("❌ Invalid Credentials (Try: host / 123)")
+            if auth_mode == "Sign In":
+                if st.button("Sign In", type="primary", use_container_width=True):
+                    user = db.authenticate(username, password)
+                    if user:
+                        st.session_state.current_user = user['username']
+                        st.session_state.user_id = user['id']
+                        st.session_state.db_loaded = False
+                        st.success("✅ Signed In!")
+                        st.session_state.page = "home"
+                        time.sleep(0.5)
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid credentials. Check username/password or Register.")
+            else:
+                if st.button("Create Account", type="primary", use_container_width=True):
+                    if username and password:
+                        user = db.create_user(username, password)
+                        if user:
+                            st.session_state.current_user = user['username']
+                            st.session_state.user_id = user['id']
+                            st.session_state.db_loaded = False
+                            st.success("✅ Account Created & Signed In!")
+                            st.session_state.page = "home"
+                            time.sleep(0.5)
+                            st.rerun()
+                        else:
+                            st.error("❌ Username already taken. Try a different one.")
+                    else:
+                        st.error("Username and Password are required.")
 
 def home_page():
     render_header()
+    
+    # Load data from DB if not already loaded
+    if not st.session_state.db_loaded:
+        load_from_db()
+    
     # Time & Greeting
     now = datetime.now()
     hour = now.hour
@@ -371,6 +449,17 @@ def home_page():
         if st.button("📋 Check Existing Main Event Folders", use_container_width=True):
             st.session_state.page = "view_folders"
             st.rerun()
+    
+    # Logout button
+    st.markdown("---")
+    if st.button("🚪 Logout"):
+        st.session_state.current_user = None
+        st.session_state.user_id = None
+        st.session_state.events = {}
+        st.session_state.main_folders = {}
+        st.session_state.db_loaded = False
+        st.session_state.page = "login"
+        st.rerun()
 
 def create_event():
     render_header()
@@ -382,17 +471,26 @@ def create_event():
         
         if st.form_submit_button("Create Event"):
             if name and password:
-                eid = f"{name}_{date}".replace(" ", "_")
+                eid = f"{name}_{str(date)}".replace(" ", "_")
+                
+                # Save to Supabase
+                db.create_event(
+                    user_id=st.session_state.user_id,
+                    event_id=eid, name=name, password=password,
+                    hall_rows=5, hall_cols=10, cluster_size=1
+                )
+                
+                # Also keep in session state
                 st.session_state.events[eid] = {
                     "name": name,
                     "date": str(date),
                     "password": password,
-                    "hall_rows": 5, # Default, can edit later
+                    "hall_rows": 5,
                     "hall_cols": 10,
                     "cluster_size": 1, 
                     "data": [],
-                    "roles": {}, # {role_name: {count: 1, reqs: {skill: weight}}}
-                    "team_members": [] # [{id, name, gender, skills: {skill: level}}]
+                    "roles": {},
+                    "team_members": []
                 }
                 st.success(f"✅ Event '{name}' Created!")
                 st.session_state.page = "events_list"
@@ -638,6 +736,7 @@ def attendance_active(evt):
                                 "timestamp": str(datetime.now())
                             }
                             evt['data'].append(record)
+                            db.add_attendee(st.session_state.current_event, record)
                             
                             # Add to known faces logic from previous code
                             if "Privacy" not in mode:
@@ -687,6 +786,10 @@ def database_view(evt):
                 if st.button("💾 Save Changes"):
                     # Convert back to list of dicts
                     evt['data'] = edited_df.to_dict('records')
+                    # Sync to DB: clear and re-add
+                    db.clear_attendees(st.session_state.current_event)
+                    for rec in evt['data']:
+                        db.add_attendee(st.session_state.current_event, rec)
                     st.success("✅ Changes Saved!")
                     st.rerun()
     else:
@@ -1011,7 +1114,14 @@ def hall_dims(evt):
     
     st.markdown("### 👥 Seating Logic")
     evt['cluster_size'] = st.number_input("Cluster Size (Same Gender Grouping)", 1, 10, evt.get('cluster_size', 1), help="Number of students of same gender to seat together (e.g. 3 Boys, 3 Girls...)")
-    st.success(f"Dimensions Updated. Cluster: {evt.get('cluster_size', 1)}")
+    
+    if st.button("💾 Save Dimensions"):
+        db.update_event(st.session_state.current_event, {
+            'hall_rows': evt['hall_rows'],
+            'hall_cols': evt['hall_cols'],
+            'cluster_size': evt['cluster_size']
+        })
+        st.success(f"✅ Dimensions Saved! Cluster: {evt.get('cluster_size', 1)}")
 
 def team_analysis(evt):
     st.subheader("👥 Analyze Team Creation")
@@ -1176,6 +1286,7 @@ def batch_upload_page(evt):
                                 "timestamp": str(datetime.now())
                             }
                             evt['data'].append(record)
+                            db.add_attendee(st.session_state.current_event, record)
                             
                             # Add to known faces
                             st.session_state.face_engine.known_encodings.append(np.array(face['encoding']))
@@ -1205,7 +1316,9 @@ def create_folder():
     st.header("📁 Create Main Event Folder")
     f_name = st.text_input("Folder Name")
     if st.button("Create"):
-        st.session_state.main_folders[f_name] = {"date": str(datetime.now().date()), "events": []}
+        folder = db.create_folder(st.session_state.user_id, f_name)
+        folder_db_id = folder['id'] if folder else None
+        st.session_state.main_folders[f_name] = {"date": str(datetime.now().date()), "events": [], "db_id": folder_db_id}
         st.success("Created!")
         st.session_state.page = "home"
         st.rerun()
@@ -1230,6 +1343,8 @@ def view_folders():
             sel_evt = st.selectbox("Add Event to Folder", avail, key=f"sel_add_{fname}")
             if st.button("Add", key=f"btn_add_{fname}"):
                 fdata['events'].append(sel_evt)
+                if fdata.get('db_id'):
+                    db.add_event_to_folder(fdata['db_id'], sel_evt)
                 st.success("Added!")
                 st.rerun()
                 
@@ -1348,6 +1463,7 @@ def team_management(evt):
                 
                 if r_name and reqs:
                     evt['roles'][r_name] = {'count': r_count, 'reqs': reqs}
+                    db.save_roles(st.session_state.current_event, evt['roles'])
                     st.success(f"Role '{r_name}' added with {len(reqs)} skills!")
                     st.rerun()
                 else:
@@ -1403,6 +1519,7 @@ def team_management(evt):
                         'gender': gender,
                         'skills': candidate_skills # List of strings now
                     })
+                    db.save_team_members(st.session_state.current_event, evt['team_members'])
                     st.success(f"{name} added!")
                     st.rerun()
                 else:
@@ -1459,6 +1576,7 @@ def team_management(evt):
                             })
                         
                         evt['team_members'] = new_members
+                        db.save_team_members(st.session_state.current_event, evt['team_members'])
                         st.success("✅ Changes Saved!")
                         st.rerun()
                 elif pwd:
