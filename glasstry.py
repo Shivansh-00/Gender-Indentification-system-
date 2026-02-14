@@ -1491,7 +1491,7 @@ def team_management(evt):
                     if not assigned:
                         st.warning("No candidates.")
                     for item in assigned:
-                        color = "blue" if item['c']['gender'] == 'Male' else "magenta"
+                        color = "blue" if item['c']['gender'] == 'Male' else "violet"
                         st.markdown(f":{color}[{item['c']['name']}] ({item['c']['gender']})")
                         st.caption(f"Score: {item['s']:.2f}")
             
