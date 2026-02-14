@@ -532,10 +532,10 @@ def attendance_active(evt):
             
             if not faces:
                 st.warning("⚠️ No faces detected! Try again.")
-                st.image(original_image, use_column_width=True)
+                st.image(original_image, use_container_width=True)
             elif current_idx >= len(faces):
                 st.success("✅ All faces processed for this photo!")
-                st.image(draw_faces(original_image, faces, -1), use_column_width=True)
+                st.image(draw_faces(original_image, faces, -1), use_container_width=True)
                 if st.button("📸 Catch Next Batch", use_container_width=True):
                     st.session_state.last_photo_hash = None
                     st.session_state.detected_faces = []
@@ -545,7 +545,7 @@ def attendance_active(evt):
                     st.rerun()
             else:
                 display_img = draw_faces(original_image, faces, current_idx)
-                st.image(display_img, use_column_width=True)
+                st.image(display_img, use_container_width=True)
                 
     with col2:
         if img_buffer and st.session_state.detected_faces and st.session_state.current_face_idx < len(st.session_state.detected_faces):
@@ -578,47 +578,75 @@ def attendance_active(evt):
             seat_mgr = SeatingManager(evt['hall_rows'], evt['hall_cols'], cluster_size=cluster)
             # Use a temporary list including current session additions if needed, but for now just evt['data']
             allocated_seat = seat_mgr.allocate_seat(evt['data'], face['gender'])
-            st.info(f"📍 Seat: **{allocated_seat}**")
             
-            # Registration Form
-            with st.form(key=f"reg_form_{idx}"):
-                if "Privacy" in mode:
-                    st.caption("🔒 Privacy Mode: Name hidden")
-                    name = f"Anon_{generate_code()}"
-                    pid = "N/A"; branch = "N/A"; age = 0
-                else:
-                    name = st.text_input("Name", key=f"name_{idx}")
-                    pid = st.text_input("ID", key=f"id_{idx}")
-                    c_b, c_a = st.columns(2)
-                    branch = c_b.text_input("Branch", key=f"br_{idx}")
-                    age = c_a.number_input("Age", 16, 60, 18, key=f"ag_{idx}")
-                
-                if st.form_submit_button("✅ Register & Next", use_container_width=True, type="primary"):
-                    if name:
-                        # Save Data
-                        record = {
-                            "sl_no": len(evt['data'])+1,
-                            "gender": face['gender'],
-                            "seat": allocated_seat,
-                            "name": name,
-                            "id": pid,
-                            "branch": branch,
-                            "age": age,
-                            "encoding": face['encoding'], # Store encoding
-                            "timestamp": str(datetime.now())
-                        }
-                        evt['data'].append(record)
-                        
-                        # Add to known faces logic from previous code
-                        if "Privacy" not in mode:
-                            st.session_state.face_engine.known_encodings.append(np.array(face['encoding']))
-                            st.session_state.face_engine.known_ids.append({'name': name, 'event_id': st.session_state.current_event})
+            # DUPLICATE CHECK
+            is_duplicate = False
+            matched_name = ""
+            
+            new_encoding = np.array(face['encoding'])
+            known_encs = st.session_state.face_engine.known_encodings
+            known_ids = st.session_state.face_engine.known_ids
+            current_evt_id = st.session_state.current_event
+            
+            if len(known_encs) > 0:
+                event_indices = [idx for idx, meta in enumerate(known_ids) if meta['event_id'] == current_evt_id]
+                if event_indices:
+                    event_encs = [known_encs[idx] for idx in event_indices]
+                    distances = np.linalg.norm(event_encs - new_encoding, axis=1)
+                    min_dist_idx = np.argmin(distances)
+                    if distances[min_dist_idx] < 0.5:
+                        is_duplicate = True
+                        original_idx = event_indices[min_dist_idx]
+                        matched_name = known_ids[original_idx]['name']
 
-                        st.success(f"✅ Saved {name}!")
-                        st.session_state.current_face_idx += 1
-                        st.rerun()
+            if is_duplicate:
+                st.warning(f"⚠️ **Already Registered Person:** {matched_name}")
+                st.info("Skipping to next person...")
+                if st.button("⏭️ Next Person", use_container_width=True, key=f"skip_{idx}"):
+                    st.session_state.current_face_idx += 1
+                    st.rerun()
+            else:
+                st.info(f"📍 Seat: **{allocated_seat}**")
+                
+                # Registration Form
+                with st.form(key=f"reg_form_{idx}"):
+                    if "Privacy" in mode:
+                        st.caption("🔒 Privacy Mode: Name hidden")
+                        name = f"Anon_{generate_code()}"
+                        pid = "N/A"; branch = "N/A"; age = 0
                     else:
-                        st.error("Name required")
+                        name = st.text_input("Name", key=f"name_{idx}")
+                        pid = st.text_input("ID", key=f"id_{idx}")
+                        c_b, c_a = st.columns(2)
+                        branch = c_b.text_input("Branch", key=f"br_{idx}")
+                        age = c_a.number_input("Age", 16, 60, 18, key=f"ag_{idx}")
+                    
+                    if st.form_submit_button("✅ Register & Next", use_container_width=True, type="primary"):
+                        if name:
+                            # Save Data
+                            record = {
+                                "sl_no": len(evt['data'])+1,
+                                "gender": face['gender'],
+                                "seat": allocated_seat,
+                                "name": name,
+                                "id": pid,
+                                "branch": branch,
+                                "age": age,
+                                "encoding": face['encoding'], # Store encoding
+                                "timestamp": str(datetime.now())
+                            }
+                            evt['data'].append(record)
+                            
+                            # Add to known faces logic from previous code
+                            if "Privacy" not in mode:
+                                st.session_state.face_engine.known_encodings.append(np.array(face['encoding']))
+                                st.session_state.face_engine.known_ids.append({'name': name, 'event_id': st.session_state.current_event})
+
+                            st.success(f"✅ Saved {name}!")
+                            st.session_state.current_face_idx += 1
+                            st.rerun()
+                        else:
+                            st.error("Name required")
         else:
             st.markdown("### 📋 Session Log")
             if evt['data']:
@@ -706,35 +734,101 @@ def dashboard_view(evt):
                  st.plotly_chart(fig_bar, use_container_width=True)
 
         # Seating Heatmap using Plotly
-        st.markdown("### 🏟️ Hall Seating Heatmap")
-        rows = evt['hall_rows']
-        cols = evt['hall_cols']
-        grid = np.zeros((rows, cols))
+
+        rows = evt.get('hall_rows', 5)
+        cols = evt.get('hall_cols', 10)
+        st.markdown("### 🏟️ Seating Arrangement")
         
-        for p in evt['data']:
-            try:
-                parts = p['seat'].split(',')
-                r_idx = ord(parts[0].replace("Row ", "").strip()) - 65
-                c_idx = int(parts[1].replace("Seat ", "").strip()) - 1
-                
-                val = 0.5
-                if p['gender'] == 'Male': val = 1
-                elif p['gender'] == 'Female': val = 2
-                
-                if 0 <= r_idx < rows and 0 <= c_idx < cols:
-                    grid[r_idx][c_idx] = val
-            except: pass
+        try:
+            # Prepare Grid Data
+            seat_map = {}
+            unmapped_participants = []
             
-        fig_heat = px.imshow(grid, 
-                        labels=dict(x="Seat Column", y="Row", color="Gender Code"),
-                        x=[f"S{i+1}" for i in range(cols)],
-                        y=[f"Row {chr(65+i)}" for i in range(rows)],
-                        color_continuous_scale=[[0, 'grey'], [0.5, '#A0D2EB'], [1, '#6C5DD3'], [2, '#FF5A5F']],
-                        aspect="auto")
-        fig_heat.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="white"))
-        fig_heat.update_traces(showscale=False)
-        st.plotly_chart(fig_heat, use_container_width=True)
-        st.caption("Grey: Empty | Purple: Male | Pink: Female | Blue: Other")
+            for p in evt['data']:
+                try:
+                    s_str = p.get('seat', '')
+                    if not s_str or "Full" in s_str or "Error" in s_str:
+                        unmapped_participants.append(p)
+                        continue
+                        
+                    parts = s_str.split(',')
+                    if len(parts) < 2:
+                        unmapped_participants.append(p)
+                        continue
+                        
+                    # Parse "Row A, Seat 1"
+                    r_str = parts[0].replace("Row ", "").strip()
+                    c_str = parts[1].replace("Seat ", "").strip()
+                    r_idx = ord(r_str) - 65
+                    c_idx = int(c_str) - 1
+                    
+                    if 0 <= r_idx < rows and 0 <= c_idx < cols:
+                        seat_map[(r_idx, c_idx)] = p
+                    else:
+                        unmapped_participants.append(p) # Out of bounds
+                except Exception as e: 
+                    unmapped_participants.append(p)
+                    # st.warning(f"Error parsing seat '{p.get('seat')}': {e}")
+
+            # Generate HTML Grid
+            html_grid = '<div style="display: flex; flex-direction: column; gap: 10px; overflow-x: auto; padding: 10px; background: rgba(255,255,255,0.02); border-radius: 10px;">'
+            
+            for r in range(rows):
+                row_html = '<div style="display: flex; gap: 10px;">'
+                # Row Label
+                row_html += f'<div style="width: 40px; display: flex; align-items: center; justify-content: center; font-weight: bold; color: rgba(255,255,255,0.7);">{chr(65+r)}</div>'
+                
+                for c in range(cols):
+                    p_data = seat_map.get((r, c))
+                    
+                    # Default Styles
+                    bg_color = "rgba(255,255,255,0.05)"
+                    border_color = "rgba(255,255,255,0.1)"
+                    text_content = f"<span style='font-size: 0.7rem; opacity: 0.3;'>{c+1}</span>"
+                    tooltip = f"Row {chr(65+r)}, Seat {c+1}: Empty"
+                    
+                    if p_data:
+                        name_display = p_data.get('name', '???')
+                        tooltip = f"Row {chr(65+r)}, Seat {c+1}: {name_display} ({p_data['gender']})"
+                        
+                        if p_data['gender'] == 'Male':
+                            bg_color = "rgba(108, 93, 211, 0.9)" # Purple
+                            border_color = "#6C5DD3"
+                        elif p_data['gender'] == 'Female':
+                            bg_color = "rgba(255, 90, 95, 0.9)" # Pink
+                            border_color = "#FF5A5F"
+                        else:
+                            bg_color = "rgba(160, 210, 235, 0.9)" # Blue
+                            border_color = "#A0D2EB"
+                            
+                        # Intelligent Font Sizing
+                        f_size = "0.85rem"
+                        if len(name_display) > 6: f_size = "0.7rem"
+                        if len(name_display) > 10: f_size = "0.6rem"
+                        
+                        text_content = f"<span style='font-weight: bold; font-size: {f_size}; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55px; display: block;'>{name_display}</span>"
+                    
+                    cell_html = f"""<div style="background-color: {bg_color}; border: 1px solid {border_color}; border-radius: 8px; width: 60px; height: 50px; display: flex; align-items: center; justify-content: center; color: white; box-shadow: 0 4px 6px rgba(0,0,0,0.1); transition: transform 0.2s; cursor: default;" title="{tooltip}">{text_content}</div>"""
+                    row_html += cell_html
+                
+                row_html += "</div>"
+                html_grid += row_html
+                
+            html_grid += "</div>"
+            
+            st.markdown(html_grid, unsafe_allow_html=True)
+            st.caption("Purple: Male | Pink: Female | Blue: Other")
+            
+            # Show Unmapped
+            if unmapped_participants:
+                with st.expander(f"⚠️ Unassigned / Parsing Issues ({len(unmapped_participants)})"):
+                    st.write("These participants have been registered but could not be placed on the visual grid (likely due to Hall Capacity limits or data errors):")
+                    for up in unmapped_participants:
+                        st.write(f"- **{up.get('name', 'Unknown')}** ({up.get('seat', 'No Seat')})")
+        
+        except Exception as e:
+            st.error(f"❌ Error rendering seating matrix: {e}")
+
         
         # 3. Download
         st.markdown("---")
