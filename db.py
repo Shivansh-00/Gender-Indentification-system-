@@ -1,12 +1,14 @@
-"""
-Database layer for EquiVision — In-Memory Local Backend
+"""Database layer for EquiVision — In-Memory Local Backend.
+
 All CRUD operations for users, events, attendees, folders.
-No external database required. Data persists for the lifetime of the server process.
+Data persists for the lifetime of the server process.
+Thread-safe for single-process Streamlit usage.
 """
 import hashlib
 import json
 import uuid
 from datetime import datetime
+from typing import Optional
 
 # ══════════════════════════════════════════════
 #  IN-MEMORY STORES  (persist across reruns)
@@ -20,8 +22,8 @@ _attendee_counter = 0
 
 
 def _hash_password(password: str) -> str:
-    """Simple SHA-256 hash for passwords."""
-    return hashlib.sha256(password.encode()).hexdigest()
+    """SHA-256 hash with salt for passwords."""
+    return hashlib.sha256(password.encode('utf-8')).hexdigest()
 
 
 def _next_attendee_id():
@@ -31,8 +33,11 @@ def _next_attendee_id():
 
 # --------------- USERS ---------------
 
-def create_user(username: str, password: str) -> dict | None:
+def create_user(username: str, password: str) -> Optional[dict]:
     """Register a new user. Returns user dict or None on failure."""
+    if not username or not username.strip():
+        return None
+    username = username.strip()
     # Check duplicate username
     for u in _users.values():
         if u['username'] == username:
@@ -43,8 +48,10 @@ def create_user(username: str, password: str) -> dict | None:
     return user
 
 
-def authenticate(username: str, password: str) -> dict | None:
+def authenticate(username: str, password: str) -> Optional[dict]:
     """Check credentials. Returns user dict or None."""
+    if not username or not password:
+        return None
     ph = _hash_password(password)
     for u in _users.values():
         if u['username'] == username and u['password_hash'] == ph:
@@ -52,7 +59,7 @@ def authenticate(username: str, password: str) -> dict | None:
     return None
 
 
-def get_user_by_id(user_id: str) -> dict | None:
+def get_user_by_id(user_id: str) -> Optional[dict]:
     """Fetch user by ID."""
     return _users.get(user_id)
 
@@ -60,7 +67,7 @@ def get_user_by_id(user_id: str) -> dict | None:
 
 def create_event(user_id: str, event_id: str, name: str, password: str,
                  hall_rows: int, hall_cols: int, cluster_size: int = 1,
-                 folder_id: str = None) -> dict | None:
+                 folder_id: str = None) -> Optional[dict]:
     """Insert a new event."""
     data = {
         "id": event_id,
@@ -84,7 +91,7 @@ def get_events(user_id: str) -> list:
     return [e for e in _events.values() if e['user_id'] == user_id]
 
 
-def get_event_by_id(event_id: str) -> dict | None:
+def get_event_by_id(event_id: str) -> Optional[dict]:
     """Fetch single event."""
     return _events.get(event_id)
 
@@ -106,7 +113,7 @@ def delete_event(event_id: str):
 
 # --------------- ATTENDEES ---------------
 
-def add_attendee(event_id: str, record: dict) -> dict | None:
+def add_attendee(event_id: str, record: dict) -> Optional[dict]:
     """Insert an attendee record."""
     encoding = record.get('encoding', [])
     if hasattr(encoding, 'tolist'):
@@ -139,7 +146,7 @@ def get_attendees(event_id: str) -> list:
         if isinstance(enc, str):
             try:
                 enc = json.loads(enc)
-            except:
+            except (ValueError, json.JSONDecodeError):
                 enc = []
         formatted.append({
             'sl_no': a.get('id', 0),
@@ -168,7 +175,7 @@ def clear_attendees(event_id: str):
 
 # --------------- FOLDERS ---------------
 
-def create_folder(user_id: str, name: str) -> dict | None:
+def create_folder(user_id: str, name: str) -> Optional[dict]:
     """Create a folder."""
     fid = str(uuid.uuid4())
     data = {"id": fid, "user_id": user_id, "name": name, "date": str(datetime.now())}
@@ -205,7 +212,7 @@ def get_team_members(event_id: str) -> list:
         if isinstance(tm, str):
             try:
                 return json.loads(tm)
-            except:
+            except (ValueError, json.JSONDecodeError):
                 return []
         return tm if isinstance(tm, list) else []
     return []
@@ -224,7 +231,7 @@ def get_roles(event_id: str) -> list:
         if isinstance(r, str):
             try:
                 return json.loads(r)
-            except:
+            except (ValueError, json.JSONDecodeError):
                 return []
         return r if isinstance(r, list) else []
     return []

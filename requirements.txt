@@ -7,5 +7,4 @@ Pillow
 fpdf
 tf-keras
 kaleido
-supabase
 plotly

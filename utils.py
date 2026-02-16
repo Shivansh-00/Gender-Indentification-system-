@@ -1,4 +1,4 @@
-﻿import random
+import random
 import pandas as pd
 
 class SeatingManager:
@@ -353,6 +353,4 @@ class TeamBalancer:
                 if not made_change:
                     break
 
-        return assignments, logs
-                        
         return assignments, logs

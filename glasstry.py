@@ -1,12 +1,17 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import numpy as np
 from PIL import Image
 from datetime import datetime
-from datetime import datetime
 import time
 import random
 import string
+import json
+import uuid
+import re
+import html as html_mod
+import hashlib
 try:
     from fpdf import FPDF
 except ImportError:
@@ -15,18 +20,22 @@ except ImportError:
 import base64
 import tempfile
 import plotly.express as px
-import plotly.graph_objects as go
 import cv2
+
+import os
+
+# Page config MUST be first Streamlit command
+st.set_page_config(page_title="EquiVision — Gender Attendance AI", layout="wide", page_icon="🎯")
 
 # Custom Modules
 try:
-    from face_engine import FaceEngine, draw_results
-    from utils import SeatingManager, TeamManager
+    from face_engine import FaceEngine
+    from utils import SeatingManager, TeamManager, TeamBalancer
 except ImportError as e:
     st.error(f"Missing modules: {e}")
     st.stop()
 
-import db  # Supabase database layer
+import db  # Database layer
 
 # --- STATE INITIALIZATION ---
 if 'face_engine' not in st.session_state: st.session_state.face_engine = FaceEngine()
@@ -37,10 +46,9 @@ if 'user_id' not in st.session_state: st.session_state.user_id = None
 if 'page' not in st.session_state: st.session_state.page = "login"
 if 'current_event' not in st.session_state: st.session_state.current_event = None
 if 'subpage' not in st.session_state: st.session_state.subpage = None
-if 'auth_stage' not in st.session_state: st.session_state.auth_stage = 0
-if 'verification_code' not in st.session_state: st.session_state.verification_code = None
 if 'upload_key' not in st.session_state: st.session_state.upload_key = 0
 if 'db_loaded' not in st.session_state: st.session_state.db_loaded = False
+if 'show_welcome' not in st.session_state: st.session_state.show_welcome = False
 
 def load_from_db():
     """Sync events and folders from Supabase into session state."""
@@ -54,14 +62,14 @@ def load_from_db():
         if eid not in st.session_state.events:
             tm = e.get('team_members', '[]')
             if isinstance(tm, str):
-                try: tm = __import__('json').loads(tm)
-                except: tm = []
+                try: tm = json.loads(tm)
+                except (ValueError, json.JSONDecodeError): tm = []
             elif tm is None: tm = []
             
             rl = e.get('roles', '[]')
             if isinstance(rl, str):
-                try: rl = __import__('json').loads(rl)
-                except: rl = {}
+                try: rl = json.loads(rl)
+                except (ValueError, json.JSONDecodeError): rl = {}
             elif rl is None: rl = {}
             
             st.session_state.events[eid] = {
@@ -89,8 +97,8 @@ def load_from_db():
             }
     
     st.session_state.db_loaded = True
-
-st.set_page_config(page_title="Gender Attendance AI", layout="wide")
+    # Reload face encodings so duplicate detection works across server restarts
+    st.session_state.face_engine.load_known_faces(st.session_state.events)
 
 # --- CSS STYLES ---
 def local_css():
@@ -124,6 +132,7 @@ def local_css():
             --secondary: #34D399;
             --secondary-100: rgba(52, 211, 153, 0.10);
             --secondary-300: #6EE7B7;
+            --secondary-400: #4ADE80;
             --secondary-500: #34D399;
             --secondary-700: #059669;
             --secondary-glow: rgba(52, 211, 153, 0.25);
@@ -202,6 +211,26 @@ def local_css():
             --duration-normal: 0.28s;
             --duration-slow: 0.45s;
             --duration-glacial: 0.7s;
+
+            /* Spacing scale */
+            --space-1: 0.25rem;
+            --space-2: 0.5rem;
+            --space-3: 0.75rem;
+            --space-4: 1rem;
+            --space-5: 1.25rem;
+            --space-6: 1.5rem;
+            --space-8: 2rem;
+            --space-10: 2.5rem;
+            --space-12: 3rem;
+
+            /* Typography scale */
+            --text-xs: 0.75rem;
+            --text-sm: 0.875rem;
+            --text-base: 1rem;
+            --text-lg: 1.125rem;
+            --text-xl: 1.25rem;
+            --text-2xl: 1.5rem;
+            --text-3xl: 1.875rem;
 
             /* Glass */
             --glass-blur: 24px;
@@ -711,15 +740,46 @@ def local_css():
             100% { background-position: 200% 50%; }
         }
 
-        /* ══════════════ ALERTS ══════════════ */
+        /* ══════════════ ALERTS — Color-Coded System ══════════════ */
         .stAlert, [data-testid="stAlert"] {
             border-radius: var(--radius-md) !important;
             border: 1px solid var(--border-subtle) !important;
             backdrop-filter: blur(16px) !important;
+            animation: alertSlideIn var(--duration-slow) var(--ease-out) both;
         }
 
         div[data-testid="stAlert"] > div[role="alert"] {
             border-radius: var(--radius-md) !important;
+        }
+
+        /* Success alerts — Green glow */
+        [data-testid="stAlert"][data-baseweb*="positive"],
+        div[role="alert"]:has(> div > svg[data-testid*="check"]) {
+            border-color: rgba(52, 211, 153, 0.3) !important;
+            background: linear-gradient(135deg, rgba(52, 211, 153, 0.06), rgba(52, 211, 153, 0.02)) !important;
+            box-shadow: 0 0 20px rgba(52, 211, 153, 0.06), inset 0 1px 0 rgba(52, 211, 153, 0.08) !important;
+        }
+
+        /* Error alerts — Rose glow */
+        [data-testid="stAlert"][data-baseweb*="negative"],
+        div[role="alert"]:has(> div > svg[data-testid*="error"]) {
+            border-color: rgba(244, 63, 94, 0.3) !important;
+            background: linear-gradient(135deg, rgba(244, 63, 94, 0.06), rgba(244, 63, 94, 0.02)) !important;
+            box-shadow: 0 0 20px rgba(244, 63, 94, 0.06), inset 0 1px 0 rgba(244, 63, 94, 0.08) !important;
+        }
+
+        /* Warning alerts — Amber glow */
+        [data-testid="stAlert"][data-baseweb*="warning"] {
+            border-color: rgba(245, 158, 11, 0.3) !important;
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.06), rgba(245, 158, 11, 0.02)) !important;
+            box-shadow: 0 0 20px rgba(245, 158, 11, 0.06), inset 0 1px 0 rgba(245, 158, 11, 0.08) !important;
+        }
+
+        /* Info alerts — Sky glow */
+        [data-testid="stAlert"][data-baseweb*="info"] {
+            border-color: rgba(56, 189, 248, 0.3) !important;
+            background: linear-gradient(135deg, rgba(56, 189, 248, 0.06), rgba(56, 189, 248, 0.02)) !important;
+            box-shadow: 0 0 20px rgba(56, 189, 248, 0.06), inset 0 1px 0 rgba(56, 189, 248, 0.08) !important;
         }
 
         /* ══════════════ DIVIDER ══════════════ */
@@ -735,13 +795,13 @@ def local_css():
                 var(--border-subtle) 85%,
                 transparent 100%
             ) !important;
-            margin: 2.2rem 0 !important;
+            margin: var(--space-8) 0 !important;
         }
 
         /* ══════════════ CAPTIONS ══════════════ */
         .stCaption, small {
             color: var(--text-faint) !important;
-            font-size: 0.78rem !important;
+            font-size: var(--text-xs) !important;
             font-family: 'Space Grotesk', sans-serif;
         }
 
@@ -754,6 +814,7 @@ def local_css():
         .stDownloadButton > button:hover {
             box-shadow: 0 8px 28px rgba(52, 211, 153, 0.25), inset 0 1px 0 rgba(255,255,255,0.15) !important;
             filter: brightness(1.06);
+            transform: translate3d(0, -2px, 0);
         }
 
         /* ══════════════ PLOTLY ══════════════ */
@@ -764,41 +825,372 @@ def local_css():
             border: 1px solid var(--border-subtle);
         }
 
-        /* ══════════════ SIDEBAR ══════════════ */
+        /* ══════════════ SIDEBAR — Premium Glass Panel ══════════════ */
         div[data-testid="stSidebar"] {
             border-radius: 0 var(--radius-xl) var(--radius-xl) 0 !important;
             border-left: none !important;
             background: linear-gradient(180deg, rgba(15, 18, 25, 0.95), rgba(10, 13, 22, 0.98)) !important;
+            border-right: 1px solid var(--border-subtle) !important;
+            box-shadow: 4px 0 40px rgba(0,0,0,0.3), 1px 0 0 var(--border-invisible) !important;
+        }
+
+        /* Sidebar animated top accent */
+        div[data-testid="stSidebar"]::before {
+            content: '';
+            position: absolute;
+            top: 0; left: var(--space-8); right: var(--space-8);
+            height: 2px;
+            background: linear-gradient(90deg, var(--primary-500), var(--secondary-500), var(--primary-500));
+            background-size: 200% 100%;
+            animation: sidebarAccent 4s ease infinite;
+            border-radius: 0 0 2px 2px;
+            z-index: 1;
+        }
+
+        @keyframes sidebarAccent {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        /* Sidebar content polish */
+        div[data-testid="stSidebar"] .stMarkdown p {
+            font-size: var(--text-sm) !important;
+        }
+
+        div[data-testid="stSidebar"] .stRadio > div > label {
+            font-size: var(--text-sm) !important;
+            padding: var(--space-3) var(--space-4) !important;
+        }
+
+        /* ══════════════ STREAMLIT HEADER — Glass Treatment ══════════════ */
+        header[data-testid="stHeader"] {
+            background: linear-gradient(180deg, rgba(6, 8, 16, 0.85), rgba(6, 8, 16, 0.4), transparent) !important;
+            backdrop-filter: blur(20px) saturate(1.5) !important;
+            -webkit-backdrop-filter: blur(20px) saturate(1.5) !important;
+            border-bottom: 1px solid var(--border-invisible) !important;
         }
 
         /* ══════════════ TOOLTIP / JSON / SPINNER ══════════════ */
-        [data-testid="stTooltipIcon"] { color: var(--text-faint) !important; }
+        [data-testid="stTooltipIcon"] {
+            color: var(--text-faint) !important;
+            transition: color var(--duration-fast) ease;
+        }
+        [data-testid="stTooltipIcon"]:hover {
+            color: var(--primary-400) !important;
+        }
 
         .stJson {
             background: var(--bg-input) !important;
             border-radius: var(--radius-sm) !important;
             border: 1px solid var(--border-subtle) !important;
             font-family: 'JetBrains Mono', monospace !important;
-            font-size: 0.8rem !important;
+            font-size: var(--text-xs) !important;
         }
 
-        .stSpinner > div { border-top-color: var(--primary-500) !important; }
+        /* Enhanced spinner with gradient */
+        .stSpinner > div {
+            border-top-color: var(--primary-500) !important;
+            border-right-color: rgba(124, 92, 252, 0.3) !important;
+            border-bottom-color: rgba(52, 211, 153, 0.15) !important;
+            border-left-color: rgba(124, 92, 252, 0.15) !important;
+            filter: drop-shadow(0 0 6px rgba(124, 92, 252, 0.2));
+        }
 
-        /* ══════════════ TOGGLE ══════════════ */
+        /* ══════════════ TOGGLE — Enhanced ══════════════ */
         .stToggle label span {
             font-family: 'Space Grotesk', sans-serif !important;
             font-weight: 500;
         }
 
-        /* ══════════════ IMAGES ══════════════ */
+        /* Toggle track styling */
+        .stToggle [data-baseweb="checkbox"] > div:first-child {
+            border-radius: var(--radius-full) !important;
+            transition: background-color var(--duration-fast) var(--ease-smooth) !important;
+        }
+
+        /* ══════════════ CHECKBOX / RADIO — Enhanced Active States ══════════════ */
+        .stCheckbox label:hover,
+        .stRadio > div > label[data-checked="true"] {
+            border-color: var(--primary-400) !important;
+            background: var(--bg-card-active) !important;
+            box-shadow: 0 0 16px rgba(124, 92, 252, 0.08) !important;
+        }
+
+        /* ══════════════ IMAGES — Enhanced ══════════════ */
         .stImage {
             border-radius: var(--radius-md);
             overflow: hidden;
+            position: relative;
         }
 
         .stImage img {
             border-radius: var(--radius-md) !important;
-            transition: transform var(--duration-slow) var(--ease-out);
+            transition: transform var(--duration-slow) var(--ease-out), filter var(--duration-slow) ease;
+        }
+
+        .stImage:hover img {
+            transform: scale(1.02);
+            filter: brightness(1.03);
+        }
+
+        /* ══════════════ SELECTBOX — Glass Dropdown ══════════════ */
+        [data-baseweb="popover"] {
+            border-radius: var(--radius-md) !important;
+            border: 1px solid var(--border-default) !important;
+            background: rgba(15, 18, 25, 0.95) !important;
+            backdrop-filter: blur(24px) !important;
+            box-shadow: var(--shadow-xl) !important;
+            overflow: hidden;
+            animation: dropdownReveal var(--duration-normal) var(--ease-out) both;
+        }
+
+        @keyframes dropdownReveal {
+            from { opacity: 0; transform: translate3d(0, -6px, 0) scale(0.97); }
+            to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+        }
+
+        [data-baseweb="popover"] li {
+            transition: background var(--duration-fast) ease !important;
+            border-radius: var(--radius-xs) !important;
+            margin: 2px var(--space-2) !important;
+        }
+
+        [data-baseweb="popover"] li:hover {
+            background: rgba(124, 92, 252, 0.1) !important;
+        }
+
+        [data-baseweb="popover"] li[aria-selected="true"] {
+            background: rgba(124, 92, 252, 0.15) !important;
+            box-shadow: inset 3px 0 0 var(--primary-500) !important;
+        }
+
+        /* ══════════════ CTA GLOW PULSE ══════════════ */
+        div.stButton > button[kind="primary"],
+        div.stButton > button:first-child {
+            animation: ctaGlowPulse 3s ease-in-out infinite;
+        }
+
+        @keyframes ctaGlowPulse {
+            0%, 100% {
+                box-shadow:
+                    0 4px 14px rgba(124, 92, 252, 0.2),
+                    0 1px 3px rgba(0,0,0,0.12),
+                    inset 0 1px 0 rgba(255,255,255,0.12);
+            }
+            50% {
+                box-shadow:
+                    0 4px 20px rgba(124, 92, 252, 0.35),
+                    0 0 40px rgba(124, 92, 252, 0.1),
+                    0 1px 3px rgba(0,0,0,0.12),
+                    inset 0 1px 0 rgba(255,255,255,0.12);
+            }
+        }
+
+        /* ══════════════ PAGE ENTRANCE ANIMATION ══════════════ */
+        .main .block-container {
+            animation: pageEntrance var(--duration-glacial) var(--ease-out) both;
+        }
+
+        @keyframes pageEntrance {
+            from {
+                opacity: 0;
+                transform: translate3d(0, 12px, 0);
+            }
+            to {
+                opacity: 1;
+                transform: translate3d(0, 0, 0);
+            }
+        }
+
+        /* Staggered column entrance */
+        [data-testid="column"] {
+            animation: columnEntrance var(--duration-slow) var(--ease-out) both;
+        }
+
+        [data-testid="column"]:nth-child(1) { animation-delay: 0.05s; }
+        [data-testid="column"]:nth-child(2) { animation-delay: 0.12s; }
+        [data-testid="column"]:nth-child(3) { animation-delay: 0.19s; }
+        [data-testid="column"]:nth-child(4) { animation-delay: 0.26s; }
+
+        @keyframes columnEntrance {
+            from {
+                opacity: 0;
+                transform: translate3d(0, 16px, 0) scale(0.98);
+            }
+            to {
+                opacity: 1;
+                transform: translate3d(0, 0, 0) scale(1);
+            }
+        }
+
+        /* ══════════════ METRIC CARD — Animated Border Glow on Hover ══════════════ */
+        [data-testid="stMetric"]::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 15%; right: 15%;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(0,0,0,0.15), transparent);
+            pointer-events: none;
+            transition: all var(--duration-normal) var(--ease-out);
+        }
+
+        [data-testid="stMetric"]:hover::after {
+            left: 5%; right: 5%;
+            background: linear-gradient(90deg, transparent, rgba(124, 92, 252, 0.2), transparent);
+        }
+
+        /* ══════════════ FILE UPLOADER — Drag Active State ══════════════ */
+        [data-testid="stFileUploader"].drag-active,
+        [data-testid="stFileUploader"]:focus-within {
+            border-color: var(--primary-400) !important;
+            background: rgba(124, 92, 252, 0.05) !important;
+            box-shadow: 0 0 30px rgba(124, 92, 252, 0.08), inset 0 0 20px rgba(124, 92, 252, 0.02) !important;
+        }
+
+        /* ══════════════ STATUS BADGES ══════════════ */
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: var(--space-2);
+            padding: var(--space-1) var(--space-3);
+            border-radius: var(--radius-full);
+            font-size: var(--text-xs);
+            font-weight: 600;
+            font-family: 'Space Grotesk', sans-serif;
+            letter-spacing: 0.02em;
+        }
+
+        .status-badge--success {
+            background: rgba(52, 211, 153, 0.1);
+            color: var(--secondary-300);
+            border: 1px solid rgba(52, 211, 153, 0.2);
+        }
+
+        .status-badge--error {
+            background: rgba(244, 63, 94, 0.1);
+            color: var(--rose-400);
+            border: 1px solid rgba(244, 63, 94, 0.2);
+        }
+
+        .status-badge--info {
+            background: rgba(56, 189, 248, 0.1);
+            color: var(--sky-400);
+            border: 1px solid rgba(56, 189, 248, 0.2);
+        }
+
+        /* ══════════════ EMPTY STATES ══════════════ */
+        .stEmpty, [data-testid="stEmpty"] {
+            color: var(--text-faint) !important;
+            font-style: italic;
+        }
+
+        /* ══════════════ LINK BUTTON ══════════════ */
+        .stLinkButton > a {
+            color: var(--primary-400) !important;
+            text-decoration: none !important;
+            transition: color var(--duration-fast) ease, text-shadow var(--duration-fast) ease !important;
+            font-weight: 500;
+        }
+        .stLinkButton > a:hover {
+            color: var(--primary-300) !important;
+            text-shadow: 0 0 12px rgba(124, 92, 252, 0.2);
+        }
+
+        /* ══════════════ MULTISELECT TAGS ══════════════ */
+        [data-baseweb="tag"] {
+            background: rgba(124, 92, 252, 0.12) !important;
+            border: 1px solid rgba(124, 92, 252, 0.2) !important;
+            border-radius: var(--radius-sm) !important;
+            color: var(--primary-200) !important;
+            font-family: 'Space Grotesk', sans-serif !important;
+            font-size: var(--text-xs) !important;
+            transition: all var(--duration-fast) ease !important;
+        }
+
+        [data-baseweb="tag"]:hover {
+            background: rgba(124, 92, 252, 0.2) !important;
+            border-color: rgba(124, 92, 252, 0.35) !important;
+        }
+
+        /* ══════════════ NUMBER INPUT — Stepper Buttons ══════════════ */
+        .stNumberInput button {
+            background: rgba(124, 92, 252, 0.08) !important;
+            border: 1px solid var(--border-subtle) !important;
+            color: var(--text-secondary) !important;
+            transition: all var(--duration-fast) ease !important;
+        }
+
+        .stNumberInput button:hover {
+            background: rgba(124, 92, 252, 0.15) !important;
+            border-color: var(--border-hover) !important;
+            color: var(--text-primary) !important;
+        }
+
+        /* ══════════════ DATE INPUT — Calendar Picker ══════════════ */
+        [data-baseweb="calendar"] {
+            background: rgba(15, 18, 25, 0.95) !important;
+            border: 1px solid var(--border-default) !important;
+            border-radius: var(--radius-md) !important;
+            backdrop-filter: blur(20px) !important;
+            box-shadow: var(--shadow-xl) !important;
+        }
+
+        [data-baseweb="calendar"] [role="gridcell"] button {
+            color: var(--text-secondary) !important;
+            border-radius: var(--radius-xs) !important;
+            transition: all var(--duration-fast) ease !important;
+        }
+
+        [data-baseweb="calendar"] [role="gridcell"] button:hover {
+            background: rgba(124, 92, 252, 0.12) !important;
+            color: var(--text-primary) !important;
+        }
+
+        [data-baseweb="calendar"] [aria-selected="true"] button {
+            background: var(--primary-500) !important;
+            color: white !important;
+        }
+
+        /* ══════════════ RESPONSIVE — Mobile Polish ══════════════ */
+        @media (max-width: 768px) {
+            .main .block-container {
+                padding-left: var(--space-4) !important;
+                padding-right: var(--space-4) !important;
+            }
+
+            [data-testid="stMetric"] {
+                padding: var(--space-4) var(--space-3) !important;
+            }
+
+            [data-testid="stMetricValue"] {
+                font-size: var(--text-xl) !important;
+            }
+
+            div.stButton > button {
+                padding: var(--space-3) var(--space-4) !important;
+                font-size: var(--text-sm) !important;
+            }
+
+            .stTabs [data-baseweb="tab"] {
+                padding: var(--space-3) var(--space-4) !important;
+                font-size: var(--text-xs) !important;
+            }
+        }
+
+        @media (max-width: 480px) {
+            h1 { font-size: var(--text-2xl) !important; }
+            h2 { font-size: var(--text-xl) !important; }
+
+            .login-title {
+                font-size: clamp(2rem, 10vw, 3rem) !important;
+            }
+        }
+
+        /* ══════════════ ULTRA-WIDE — Scale Up ══════════════ */
+        @media (min-width: 2000px) {
+            :root {
+                --glass-blur: 32px;
+            }
         }
 
         /* ═══════════════════════════════════════════════════════
@@ -3217,11 +3609,6 @@ def local_css():
             animation: focusRingPulse 1.5s ease-in-out infinite;
         }
 
-        @keyframes focusRingPulse {
-            0%, 100% { outline-offset: 3px; }
-            50% { outline-offset: 4px; }
-        }
-
         /* ══════════════ CURSOR ENHANCEMENTS ══════════════ */
         div.stButton > button,
         .stRadio label,
@@ -3902,14 +4289,7 @@ def local_css():
         }
 
         /* ══════════════ SKELETON LOADING PREMIUM ══════════════ */
-        @keyframes skeletonShimmer {
-            0% {
-                background-position: -200% 0;
-            }
-            100% {
-                background-position: 200% 0;
-            }
-        }
+        /* Skeleton shimmer defined below in enhanced section */
 
         .skeleton-premium {
             background: linear-gradient(
@@ -4391,11 +4771,1040 @@ def local_css():
             background: linear-gradient(135deg, rgba(52, 211, 153, 0.04), rgba(245, 158, 11, 0.02));
         }
 
+        /* ══════════════════════════════════════════════════════════════════
+           LIGHTNING CUBE — 3D Rotating Cube with Electric Edge Glow
+           ══════════════════════════════════════════════════════════════════ */
+        .lightning-cube-layer {
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 0;
+            overflow: hidden;
+            perspective: 1200px;
+        }
+
+        .lightning-cube-wrapper {
+            position: absolute;
+            width: 80px;
+            height: 80px;
+            transform-style: preserve-3d;
+            animation: lightningCubeRotate 18s linear infinite;
+            will-change: transform;
+        }
+
+        .lightning-cube-wrapper.lc-1 {
+            top: 12%;
+            right: 8%;
+            width: 60px;
+            height: 60px;
+            animation-duration: 22s;
+            opacity: 0.3;
+        }
+
+        .lightning-cube-wrapper.lc-2 {
+            bottom: 18%;
+            left: 5%;
+            width: 45px;
+            height: 45px;
+            animation-duration: 28s;
+            animation-direction: reverse;
+            opacity: 0.2;
+        }
+
+        .lightning-cube-wrapper.lc-3 {
+            top: 55%;
+            right: 15%;
+            width: 35px;
+            height: 35px;
+            animation-duration: 25s;
+            opacity: 0.15;
+            animation-delay: -5s;
+        }
+
+        .lightning-cube-wrapper.lc-4 {
+            top: 30%;
+            left: 12%;
+            width: 50px;
+            height: 50px;
+            animation-duration: 20s;
+            opacity: 0.18;
+            animation-delay: -10s;
+        }
+
+        .lightning-cube-face {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 1px solid rgba(124, 92, 252, 0.25);
+            background: rgba(124, 92, 252, 0.02);
+            box-shadow:
+                inset 0 0 15px rgba(124, 92, 252, 0.05),
+                0 0 8px rgba(124, 92, 252, 0.08);
+            backface-visibility: visible;
+        }
+
+        .lightning-cube-face--front  { transform: translateZ(calc(var(--cube-size, 40px) / 2)); }
+        .lightning-cube-face--back   { transform: rotateY(180deg) translateZ(calc(var(--cube-size, 40px) / 2)); }
+        .lightning-cube-face--right  { transform: rotateY(90deg) translateZ(calc(var(--cube-size, 40px) / 2)); }
+        .lightning-cube-face--left   { transform: rotateY(-90deg) translateZ(calc(var(--cube-size, 40px) / 2)); }
+        .lightning-cube-face--top    { transform: rotateX(90deg) translateZ(calc(var(--cube-size, 40px) / 2)); }
+        .lightning-cube-face--bottom { transform: rotateX(-90deg) translateZ(calc(var(--cube-size, 40px) / 2)); }
+
+        /* Electric edge glow on cube */
+        .lightning-cube-face::before {
+            content: '';
+            position: absolute;
+            inset: -1px;
+            border: 1px solid transparent;
+            border-image: linear-gradient(
+                var(--edge-angle, 135deg),
+                transparent 0%,
+                rgba(124, 92, 252, 0.6) 30%,
+                rgba(52, 211, 153, 0.5) 50%,
+                rgba(124, 92, 252, 0.6) 70%,
+                transparent 100%
+            ) 1;
+            animation: edgeGlowShift 3s ease-in-out infinite alternate;
+            opacity: 0.7;
+        }
+
+        .lightning-cube-face--front::before  { --edge-angle: 0deg; }
+        .lightning-cube-face--right::before  { --edge-angle: 90deg; }
+        .lightning-cube-face--back::before   { --edge-angle: 180deg; }
+        .lightning-cube-face--left::before   { --edge-angle: 270deg; }
+        .lightning-cube-face--top::before    { --edge-angle: 45deg; }
+        .lightning-cube-face--bottom::before { --edge-angle: 225deg; }
+
+        /* Energy pulse on cube */
+        .lightning-cube-wrapper::after {
+            content: '';
+            position: absolute;
+            inset: -20%;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(124, 92, 252, 0.08) 0%, transparent 70%);
+            animation: cubePulse 4s ease-in-out infinite;
+            pointer-events: none;
+        }
+
+        @keyframes lightningCubeRotate {
+            0%   { transform: rotateX(0deg) rotateY(0deg) rotateZ(0deg); }
+            100% { transform: rotateX(360deg) rotateY(360deg) rotateZ(180deg); }
+        }
+
+        @keyframes edgeGlowShift {
+            0%   { opacity: 0.3; filter: hue-rotate(0deg); }
+            50%  { opacity: 0.8; filter: hue-rotate(15deg); }
+            100% { opacity: 0.4; filter: hue-rotate(-15deg); }
+        }
+
+        @keyframes cubePulse {
+            0%, 100% { transform: scale(1); opacity: 0.4; }
+            50%      { transform: scale(1.15); opacity: 0.7; }
+        }
+
+        /* Hover acceleration on cube parent hover */
+        .lightning-cube-layer:hover .lightning-cube-wrapper {
+            animation-duration: 6s !important;
+        }
+
+        /* Dynamic lighting reflection on cubes */
+        .lightning-cube-face::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(
+                135deg,
+                rgba(255, 255, 255, 0.06) 0%,
+                transparent 40%,
+                transparent 60%,
+                rgba(124, 92, 252, 0.04) 100%
+            );
+            animation: lightReflect 6s ease-in-out infinite alternate;
+        }
+
+        @keyframes lightReflect {
+            0%   { opacity: 0.3; }
+            50%  { opacity: 0.8; }
+            100% { opacity: 0.4; }
+        }
+
+        /* ══════════════════════════════════════════════════════════════════
+           WELCOME OVERLAY — Premium Signup Success Animation
+           ══════════════════════════════════════════════════════════════════ */
+        .welcome-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 99999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-direction: column;
+            background: rgba(6, 8, 16, 0.92);
+            backdrop-filter: blur(30px) saturate(1.5);
+            -webkit-backdrop-filter: blur(30px) saturate(1.5);
+            animation: welcomeOverlayIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            pointer-events: all;
+            overflow: hidden;
+        }
+
+        .welcome-overlay.exit {
+            animation: welcomeOverlayOut 0.8s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+        }
+
+        @keyframes welcomeOverlayIn {
+            0% {
+                opacity: 0;
+                backdrop-filter: blur(0px);
+            }
+            100% {
+                opacity: 1;
+                backdrop-filter: blur(30px) saturate(1.5);
+            }
+        }
+
+        @keyframes welcomeOverlayOut {
+            0% {
+                opacity: 1;
+                transform: scale(1);
+            }
+            100% {
+                opacity: 0;
+                transform: scale(1.05);
+                pointer-events: none;
+            }
+        }
+
+        /* Welcome text with glow + spring scale-in */
+        .welcome-overlay-title {
+            font-family: 'Inter', sans-serif;
+            font-weight: 900;
+            font-size: clamp(3rem, 8vw, 6rem);
+            letter-spacing: -0.05em;
+            line-height: 1.05;
+            text-align: center;
+            background: linear-gradient(
+                135deg,
+                #FFFFFF 0%,
+                var(--primary-200) 30%,
+                #FFFFFF 50%,
+                var(--secondary-300) 70%,
+                #FFFFFF 100%
+            );
+            background-size: 300% 300%;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation:
+                welcomeTextScale 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) 0.2s both,
+                welcomeTextShimmer 4s ease-in-out infinite 1s;
+            filter: drop-shadow(0 0 40px rgba(124, 92, 252, 0.4))
+                    drop-shadow(0 0 80px rgba(52, 211, 153, 0.15));
+            position: relative;
+            z-index: 2;
+        }
+
+        @keyframes welcomeTextScale {
+            0% {
+                opacity: 0;
+                transform: scale(0.5) translateY(30px);
+                filter: blur(10px);
+            }
+            60% {
+                opacity: 1;
+                transform: scale(1.05) translateY(-5px);
+                filter: blur(0px);
+            }
+            100% {
+                opacity: 1;
+                transform: scale(1) translateY(0);
+                filter: blur(0);
+            }
+        }
+
+        @keyframes welcomeTextShimmer {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        /* Glow pulse behind welcome text */
+        .welcome-overlay-title::before {
+            content: '';
+            position: absolute;
+            inset: -40%;
+            background: radial-gradient(
+                ellipse 60% 60% at 50% 50%,
+                rgba(124, 92, 252, 0.15) 0%,
+                rgba(52, 211, 153, 0.05) 40%,
+                transparent 70%
+            );
+            animation: welcomeGlowPulse 3s ease-in-out infinite;
+            z-index: -1;
+        }
+
+        @keyframes welcomeGlowPulse {
+            0%, 100% { transform: scale(1); opacity: 0.6; }
+            50%      { transform: scale(1.2); opacity: 1; }
+        }
+
+        /* Letter-by-letter reveal via clip-path */
+        .welcome-letter {
+            display: inline-block;
+            opacity: 0;
+            animation: letterReveal 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+            will-change: transform, opacity;
+        }
+
+        @keyframes letterReveal {
+            0% {
+                opacity: 0;
+                transform: translateY(30px) scale(0.7) rotateX(-40deg);
+                filter: blur(4px);
+            }
+            100% {
+                opacity: 1;
+                transform: translateY(0) scale(1) rotateX(0deg);
+                filter: blur(0);
+            }
+        }
+
+        /* Welcome subtitle */
+        .welcome-overlay-subtitle {
+            font-family: 'Space Grotesk', sans-serif;
+            font-size: clamp(0.9rem, 2vw, 1.2rem);
+            color: var(--text-muted);
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            margin-top: 0.8rem;
+            opacity: 0;
+            animation: welcomeSubReveal 0.6s ease-out 1.2s forwards;
+            position: relative;
+            z-index: 2;
+        }
+
+        @keyframes welcomeSubReveal {
+            0% { opacity: 0; transform: translateY(15px); letter-spacing: 0.4em; }
+            100% { opacity: 0.7; transform: translateY(0); letter-spacing: 0.15em; }
+        }
+
+        /* Welcome CTA button */
+        .welcome-overlay-btn {
+            margin-top: 2.5rem;
+            padding: 0.85rem 2.5rem;
+            background: linear-gradient(140deg, var(--primary-500) 0%, var(--primary-700) 100%);
+            color: white;
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: var(--radius-md);
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+            font-size: 0.95rem;
+            letter-spacing: 0.02em;
+            cursor: pointer;
+            position: relative;
+            z-index: 2;
+            overflow: hidden;
+            opacity: 0;
+            animation: welcomeBtnIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 1.6s forwards;
+            transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+                        box-shadow 0.3s ease;
+            box-shadow:
+                0 6px 20px rgba(124, 92, 252, 0.3),
+                0 2px 6px rgba(0,0,0,0.15),
+                inset 0 1px 0 rgba(255,255,255,0.12);
+        }
+
+        .welcome-overlay-btn:hover {
+            transform: translateY(-3px) scale(1.04);
+            box-shadow:
+                0 10px 35px rgba(124, 92, 252, 0.45),
+                0 4px 10px rgba(0,0,0,0.2),
+                inset 0 1px 0 rgba(255,255,255,0.2);
+        }
+
+        .welcome-overlay-btn:active {
+            transform: translateY(0) scale(0.97);
+            transition-duration: 0.08s;
+        }
+
+        /* Shimmer sweep on button */
+        .welcome-overlay-btn::before {
+            content: '';
+            position: absolute;
+            top: 0; left: -150%;
+            width: 80%; height: 100%;
+            background: linear-gradient(
+                105deg,
+                transparent 30%,
+                rgba(255,255,255,0.08) 42%,
+                rgba(255,255,255,0.18) 50%,
+                rgba(255,255,255,0.08) 58%,
+                transparent 70%
+            );
+            animation: welcomeBtnShimmer 3s ease-in-out 2.5s infinite;
+        }
+
+        @keyframes welcomeBtnIn {
+            0% { opacity: 0; transform: translateY(20px) scale(0.85); }
+            100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        @keyframes welcomeBtnShimmer {
+            0%, 100% { left: -150%; }
+            50% { left: 150%; }
+        }
+
+        /* Particle burst behind welcome */
+        .welcome-particle {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 1;
+            animation: particleBurst 2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            will-change: transform, opacity;
+        }
+
+        @keyframes particleBurst {
+            0% {
+                opacity: 1;
+                transform: translate(0, 0) scale(1);
+            }
+            100% {
+                opacity: 0;
+                transform: translate(var(--px, 100px), var(--py, -100px)) scale(0);
+            }
+        }
+
+        /* Light streak effect */
+        .welcome-light-streak {
+            position: absolute;
+            width: 200px;
+            height: 2px;
+            border-radius: 2px;
+            pointer-events: none;
+            z-index: 1;
+            animation: lightStreakMove 1.5s ease-out forwards;
+            opacity: 0;
+            will-change: transform, opacity;
+        }
+
+        @keyframes lightStreakMove {
+            0% {
+                opacity: 0;
+                transform: translateX(-100%) scaleX(0.3);
+            }
+            20% {
+                opacity: 1;
+            }
+            100% {
+                opacity: 0;
+                transform: translateX(200%) scaleX(1);
+            }
+        }
+
+        /* Welcome cube (larger, behind text) */
+        .welcome-cube-wrapper {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 200px;
+            height: 200px;
+            transform-style: preserve-3d;
+            animation: welcomeCubeRotate 12s linear infinite;
+            opacity: 0.12;
+            z-index: 1;
+            perspective: 800px;
+        }
+
+        .welcome-cube-face {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border: 1.5px solid rgba(124, 92, 252, 0.35);
+            background: rgba(124, 92, 252, 0.03);
+            box-shadow:
+                inset 0 0 25px rgba(124, 92, 252, 0.08),
+                0 0 15px rgba(124, 92, 252, 0.12);
+        }
+
+        .welcome-cube-face--front  { transform: translateZ(100px); }
+        .welcome-cube-face--back   { transform: rotateY(180deg) translateZ(100px); }
+        .welcome-cube-face--right  { transform: rotateY(90deg) translateZ(100px); }
+        .welcome-cube-face--left   { transform: rotateY(-90deg) translateZ(100px); }
+        .welcome-cube-face--top    { transform: rotateX(90deg) translateZ(100px); }
+        .welcome-cube-face--bottom { transform: rotateX(-90deg) translateZ(100px); }
+
+        @keyframes welcomeCubeRotate {
+            0%   { transform: translate(-50%, -50%) rotateX(0deg) rotateY(0deg); }
+            100% { transform: translate(-50%, -50%) rotateX(360deg) rotateY(360deg); }
+        }
+
+        /* ══════════════════════════════════════════════════════════════════
+           ENHANCED MICRO-INTERACTIONS — Premium Level
+           ══════════════════════════════════════════════════════════════════ */
+
+        /* Smooth navbar underline animation */
+        .stRadio > div > label::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            width: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--primary-500), var(--secondary-500));
+            transition: width 0.3s var(--ease-out), left 0.3s var(--ease-out);
+            border-radius: 2px;
+        }
+
+        .stRadio > div > label:hover::after,
+        .stRadio > div > label[data-checked="true"]::after {
+            width: 60%;
+            left: 20%;
+        }
+
+        /* Animated focus ring for inputs */
+        .stTextInput > div > div > input:focus,
+        .stTextArea textarea:focus,
+        .stNumberInput > div > div > input:focus {
+            outline: none !important;
+            box-shadow:
+                0 0 0 2px rgba(124, 92, 252, 0.3),
+                0 0 0 4px rgba(124, 92, 252, 0.1),
+                0 0 20px rgba(124, 92, 252, 0.08) !important;
+            animation: focusRingPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes focusRingPulse {
+            0%, 100% {
+                box-shadow:
+                    0 0 0 2px rgba(124, 92, 252, 0.3),
+                    0 0 0 4px rgba(124, 92, 252, 0.1),
+                    0 0 20px rgba(124, 92, 252, 0.08);
+            }
+            50% {
+                box-shadow:
+                    0 0 0 3px rgba(124, 92, 252, 0.4),
+                    0 0 0 6px rgba(124, 92, 252, 0.15),
+                    0 0 30px rgba(124, 92, 252, 0.12);
+            }
+        }
+
+        /* Enhanced toast notification animation */
+        [data-testid="stAlert"] {
+            animation: toastSlideIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both !important;
+        }
+
+        @keyframes toastSlideIn {
+            0% {
+                opacity: 0;
+                transform: translateX(30px) scale(0.95);
+                filter: blur(4px);
+            }
+            100% {
+                opacity: 1;
+                transform: translateX(0) scale(1);
+                filter: blur(0);
+            }
+        }
+
+        /* Skeleton loading pulse */
+        .skeleton-loading {
+            background: linear-gradient(
+                90deg,
+                rgba(255,255,255,0.03) 25%,
+                rgba(255,255,255,0.06) 50%,
+                rgba(255,255,255,0.03) 75%
+            );
+            background-size: 200% 100%;
+            animation: skeletonShimmer 1.5s ease-in-out infinite;
+            border-radius: var(--radius-sm);
+        }
+
+        @keyframes skeletonShimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+
+        /* Enhanced sidebar open/close animation */
+        div[data-testid="stSidebar"] {
+            transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+                        opacity 0.3s ease !important;
+        }
+
+        div[data-testid="stSidebar"][aria-expanded="false"] {
+            transform: translateX(-100%);
+            opacity: 0;
+        }
+
+        /* Floating label input simulation */
+        .stTextInput label,
+        .stTextArea label,
+        .stNumberInput label,
+        .stSelectbox label {
+            transition: all 0.3s var(--ease-out) !important;
+            transform-origin: left center;
+        }
+
+        .stTextInput:focus-within label,
+        .stTextArea:focus-within label,
+        .stNumberInput:focus-within label {
+            color: var(--primary-300) !important;
+            transform: scale(0.9);
+        }
+
+        /* ══════════════════════════════════════════════════════════════════
+           AMBIENT LIGHT STREAKS — Atmospheric Background Effect
+           ══════════════════════════════════════════════════════════════════ */
+        .ambient-light-streak {
+            position: fixed;
+            width: 300px;
+            height: 1px;
+            pointer-events: none;
+            z-index: 0;
+            opacity: 0;
+            will-change: transform, opacity;
+        }
+
+        .ambient-light-streak-1 {
+            top: 20%;
+            left: -10%;
+            background: linear-gradient(90deg, transparent, rgba(124, 92, 252, 0.15), transparent);
+            animation: ambientStreakFloat1 12s ease-in-out infinite;
+        }
+
+        .ambient-light-streak-2 {
+            top: 60%;
+            right: -10%;
+            background: linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.1), transparent);
+            animation: ambientStreakFloat2 15s ease-in-out 3s infinite;
+        }
+
+        .ambient-light-streak-3 {
+            top: 40%;
+            left: -5%;
+            width: 200px;
+            background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.08), transparent);
+            animation: ambientStreakFloat3 18s ease-in-out 6s infinite;
+        }
+
+        @keyframes ambientStreakFloat1 {
+            0%   { opacity: 0; transform: translateX(0) rotate(-5deg); }
+            20%  { opacity: 0.6; }
+            50%  { opacity: 0.8; transform: translateX(120vw) rotate(-3deg); }
+            80%  { opacity: 0.4; }
+            100% { opacity: 0; transform: translateX(120vw) rotate(-5deg); }
+        }
+
+        @keyframes ambientStreakFloat2 {
+            0%   { opacity: 0; transform: translateX(0) rotate(3deg); }
+            25%  { opacity: 0.5; }
+            50%  { opacity: 0.7; transform: translateX(-120vw) rotate(5deg); }
+            75%  { opacity: 0.3; }
+            100% { opacity: 0; transform: translateX(-120vw) rotate(3deg); }
+        }
+
+        @keyframes ambientStreakFloat3 {
+            0%   { opacity: 0; transform: translateX(0) rotate(-2deg); }
+            30%  { opacity: 0.5; }
+            60%  { opacity: 0.6; transform: translateX(100vw) rotate(0deg); }
+            100% { opacity: 0; transform: translateX(100vw) rotate(-2deg); }
+        }
+
+        /* ══════════════════════════════════════════════════════════════════
+           ANIMATED GRADIENT BACKGROUND — Smooth Section Transitions
+           ══════════════════════════════════════════════════════════════════ */
+        .stApp {
+            background-size: 400% 400%;
+            animation: gradientShift 30s ease infinite;
+        }
+
+        @keyframes gradientShift {
+            0%   { background-position: 0% 50%; }
+            25%  { background-position: 50% 0%; }
+            50%  { background-position: 100% 50%; }
+            75%  { background-position: 50% 100%; }
+            100% { background-position: 0% 50%; }
+        }
+
+        /* ══════════════════════════════════════════════════════════════════
+           DEPTH ILLUSION LAYERING — Parallax Float Elements
+           ══════════════════════════════════════════════════════════════════ */
+        .depth-float-element {
+            position: fixed;
+            pointer-events: none;
+            z-index: 0;
+            border-radius: 50%;
+            filter: blur(40px);
+            will-change: transform;
+        }
+
+        .depth-float-1 {
+            width: 300px;
+            height: 300px;
+            top: -5%;
+            right: -5%;
+            background: rgba(124, 92, 252, 0.04);
+            animation: depthFloat1 20s ease-in-out infinite;
+        }
+
+        .depth-float-2 {
+            width: 200px;
+            height: 200px;
+            bottom: 10%;
+            left: -3%;
+            background: rgba(52, 211, 153, 0.03);
+            animation: depthFloat2 25s ease-in-out infinite;
+        }
+
+        .depth-float-3 {
+            width: 150px;
+            height: 150px;
+            top: 45%;
+            right: 20%;
+            background: rgba(245, 158, 11, 0.02);
+            animation: depthFloat3 22s ease-in-out infinite;
+        }
+
+        @keyframes depthFloat1 {
+            0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+            33% { transform: translate3d(-20px, 15px, 0) scale(1.08); }
+            66% { transform: translate3d(15px, -10px, 0) scale(0.95); }
+        }
+
+        @keyframes depthFloat2 {
+            0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+            40% { transform: translate3d(25px, -20px, 0) scale(1.1); }
+            70% { transform: translate3d(-10px, 10px, 0) scale(0.92); }
+        }
+
+        @keyframes depthFloat3 {
+            0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+            50% { transform: translate3d(-15px, 20px, 0) scale(1.12); }
+        }
+
+        /* ══════════════════════════════════════════════════════════════════
+           REDUCED MOTION — Accessibility Compliance
+           ══════════════════════════════════════════════════════════════════ */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-delay: 0ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+
+            .lightning-cube-layer,
+            .welcome-particle,
+            .welcome-light-streak,
+            .ambient-light-streak,
+            .depth-float-element,
+            .morph-blob,
+            .aurora,
+            .shooting-star,
+            #stars-container .star {
+                display: none !important;
+            }
+
+            .welcome-overlay {
+                animation: none !important;
+                opacity: 1;
+            }
+
+            .welcome-overlay-title {
+                animation: none !important;
+                opacity: 1;
+            }
+        }
+
+        /* ══════════════════════════════════════════════════════════════════
+           PERFORMANCE — GPU & Low-End Device Optimizations
+           ══════════════════════════════════════════════════════════════════ */
+        .lightning-cube-wrapper,
+        .welcome-cube-wrapper,
+        .depth-float-element,
+        .morph-blob,
+        .ambient-light-streak {
+            contain: layout style;
+            will-change: transform;
+        }
+
+        /* Graceful degradation for low-performance devices */
+        @media (max-width: 768px) {
+            .lightning-cube-layer { opacity: 0.5; }
+            .lightning-cube-wrapper.lc-3,
+            .lightning-cube-wrapper.lc-4 { display: none; }
+            .depth-float-3 { display: none; }
+            .ambient-light-streak-3 { display: none; }
+        }
+
+        @media (max-width: 480px) {
+            .lightning-cube-layer { display: none; }
+            .depth-float-element { display: none; }
+            .ambient-light-streak { display: none; }
+        }
+
+        /* ═══════════════════════════════════════════════════════════
+           ELITE MOTION ARCHITECTURE — Physics-Based Animation System
+           Framer Motion-inspired CSS with spring dynamics
+           ═══════════════════════════════════════════════════════════ */
+
+        /* === SPRING-BASED PAGE ENTRANCE === */
+        @keyframes springReveal {
+            0% { opacity: 0; transform: translate3d(0, 30px, 0) scale(0.96); }
+            40% { opacity: 1; transform: translate3d(0, -4px, 0) scale(1.01); }
+            70% { transform: translate3d(0, 2px, 0) scale(0.998); }
+            100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+        }
+
+        @keyframes springFadeIn {
+            0% { opacity: 0; transform: scale(0.92); filter: blur(8px); }
+            50% { opacity: 0.8; transform: scale(1.02); filter: blur(1px); }
+            75% { transform: scale(0.995); filter: blur(0); }
+            100% { opacity: 1; transform: scale(1); filter: blur(0); }
+        }
+
+        @keyframes slideUpSpring {
+            0% { opacity: 0; transform: translateY(40px); }
+            60% { opacity: 1; transform: translateY(-6px); }
+            80% { transform: translateY(2px); }
+            100% { transform: translateY(0); }
+        }
+
+        @keyframes slideLeftReveal {
+            0% { opacity: 0; transform: translateX(30px); }
+            60% { opacity: 1; transform: translateX(-4px); }
+            100% { transform: translateX(0); }
+        }
+
+        /* === STAGGERED CONTENT ENTRANCE === */
+        [data-testid="stMetric"]:nth-child(1) { animation: springReveal 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) 0.05s both; }
+        [data-testid="stMetric"]:nth-child(2) { animation: springReveal 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) 0.12s both; }
+        [data-testid="stMetric"]:nth-child(3) { animation: springReveal 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) 0.19s both; }
+        [data-testid="stMetric"]:nth-child(4) { animation: springReveal 0.7s cubic-bezier(0.34, 1.56, 0.64, 1) 0.26s both; }
+
+        .menu-card:nth-child(1) { animation: slideUpSpring 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.1s both; }
+        .menu-card:nth-child(2) { animation: slideUpSpring 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.18s both; }
+        .menu-card:nth-child(3) { animation: slideUpSpring 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.26s both; }
+        .menu-card:nth-child(4) { animation: slideUpSpring 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.34s both; }
+        .menu-card:nth-child(5) { animation: slideUpSpring 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.42s both; }
+        .menu-card:nth-child(6) { animation: slideUpSpring 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.50s both; }
+
+        .event-list-card { animation: slideLeftReveal 0.5s cubic-bezier(0.16, 1, 0.3, 1) both; }
+        .event-list-card:nth-child(2) { animation-delay: 0.08s; }
+        .event-list-card:nth-child(3) { animation-delay: 0.16s; }
+        .event-list-card:nth-child(4) { animation-delay: 0.24s; }
+
+        .person-card { animation: springFadeIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+
+        /* === MAGNETIC HOVER SYSTEM === */
+        .menu-card {
+            --hover-glow: rgba(124, 92, 252, 0.12);
+            will-change: transform, box-shadow;
+        }
+
+        .menu-card:hover {
+            transform: translateY(-8px) scale(1.025) !important;
+            box-shadow:
+                0 20px 40px rgba(0, 0, 0, 0.25),
+                0 0 30px var(--hover-glow),
+                0 0 60px rgba(124, 92, 252, 0.06),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+        }
+
+        .menu-card:active {
+            transform: translateY(-2px) scale(0.98) !important;
+            transition-duration: 0.1s !important;
+        }
+
+        /* === SUBTLE ELEVATION EFFECTS === */
+        div.stButton > button {
+            will-change: transform, box-shadow;
+        }
+
+        div.stButton > button:hover {
+            transform: translateY(-2px) !important;
+            box-shadow: 0 8px 25px rgba(124, 92, 252, 0.25), 0 4px 12px rgba(0,0,0,0.15) !important;
+        }
+
+        div.stButton > button:active {
+            transform: translateY(0px) scale(0.97) !important;
+            transition-duration: 0.08s !important;
+        }
+
+        /* === ANIMATED UNDERLINE FOR TAB INDICATORS === */
+        .stTabs [data-baseweb="tab-highlight"] {
+            background-color: var(--primary) !important;
+            height: 3px !important;
+            border-radius: 3px 3px 0 0 !important;
+            transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+        }
+
+        .stTabs [data-baseweb="tab"] {
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
+        }
+
+        .stTabs [data-baseweb="tab"]:hover {
+            color: var(--primary-300) !important;
+            background: rgba(124, 92, 252, 0.05) !important;
+        }
+
+        .stTabs [data-baseweb="tab"][aria-selected="true"] {
+            color: var(--primary-200) !important;
+            text-shadow: 0 0 20px rgba(124, 92, 252, 0.3);
+        }
+
+        /* === MODAL / EXPANDER SPRING ANIMATION === */
+        [data-testid="stExpander"] details[open] > div {
+            animation: springReveal 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both !important;
+        }
+
+        /* === TOAST / SUCCESS NOTIFICATION ANIMATION === */
+        @keyframes toastSlideIn {
+            0% { opacity: 0; transform: translate3d(0, -20px, 0) scale(0.9); }
+            50% { transform: translate3d(0, 4px, 0) scale(1.02); }
+            100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+        }
+
+        .stAlert {
+            animation: toastSlideIn 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both !important;
+        }
+
+        /* === COUNTER / NUMBER ANIMATIONS === */
+        [data-testid="stMetric"] [data-testid="stMetricValue"] {
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1) !important;
+        }
+
+        /* === PROGRESS BAR SMOOTH FILL === */
+        [data-testid="stProgress"] > div > div {
+            transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1) !important;
+        }
+
+        @keyframes progressGlow {
+            0%, 100% { box-shadow: 0 0 8px rgba(124, 92, 252, 0.4); }
+            50% { box-shadow: 0 0 16px rgba(124, 92, 252, 0.7), 0 0 30px rgba(124, 92, 252, 0.2); }
+        }
+
+        [data-testid="stProgress"] > div > div > div {
+            animation: progressGlow 2s ease-in-out infinite !important;
+            background: linear-gradient(90deg, var(--primary), var(--secondary), var(--primary)) !important;
+            background-size: 200% 100% !important;
+        }
+
+        /* === FORM FIELD FOCUS ELEVATION === */
+        .stTextInput input:focus,
+        .stTextArea textarea:focus {
+            box-shadow:
+                0 0 0 2px rgba(124, 92, 252, 0.15),
+                0 4px 20px rgba(124, 92, 252, 0.1),
+                0 8px 40px rgba(0, 0, 0, 0.1) !important;
+            transform: translateY(-1px);
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
+        }
+
+        /* === GRADIENT MOTION ON HEADERS === */
+        @keyframes gradientShift {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        h1, .login-title {
+            background-size: 200% auto !important;
+            animation: gradientShift 6s ease-in-out infinite !important;
+        }
+
+        /* === SEAT GRID HOVER INTERACTIONS === */
+        .seat-cell {
+            transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+            cursor: pointer;
+        }
+
+        .seat-cell:hover {
+            transform: scale(1.15) translateY(-3px) !important;
+            z-index: 10 !important;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3) !important;
+        }
+
+        .seat-male:hover { box-shadow: 0 8px 25px rgba(108, 93, 211, 0.4) !important; }
+        .seat-female:hover { box-shadow: 0 8px 25px rgba(244, 63, 94, 0.4) !important; }
+        .seat-other:hover { box-shadow: 0 8px 25px rgba(56, 189, 248, 0.4) !important; }
+
+        /* === PLOTLY CHART CONTAINER ENTRANCE === */
+        .js-plotly-plot {
+            animation: springFadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1) 0.3s both;
+        }
+
+        /* === DATA TABLE ENTRANCE === */
+        .stDataFrame {
+            animation: slideUpSpring 0.6s cubic-bezier(0.16, 1, 0.3, 1) 0.2s both;
+        }
+
+        /* === IMAGE ENTRANCE === */
+        [data-testid="stImage"] {
+            animation: springFadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
+
+        /* === DOWNLOAD BUTTON SHINE === */
+        @keyframes buttonShine {
+            0% { left: -100%; }
+            50%, 100% { left: 200%; }
+        }
+
+        .stDownloadButton button::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 60%;
+            height: 100%;
+            background: linear-gradient(
+                90deg,
+                transparent,
+                rgba(255, 255, 255, 0.08),
+                transparent
+            );
+            animation: buttonShine 3s ease-in-out infinite;
+            pointer-events: none;
+        }
+
+        .stDownloadButton button {
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* === REDUCED MOTION RESPECT === */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
+
+        /* === GLASS DATA CARD DEPTH === */
+        [data-testid="stForm"] {
+            animation: springReveal 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) 0.15s both;
+        }
+
+        /* === SMART INSIGHTS CARD ANIMATION === */
+        .insight-card {
+            animation: slideUpSpring 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+            transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        .insight-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+        }
+
     </style>
     """, unsafe_allow_html=True)
 
 def inject_premium_elements():
-    """Inject premium futuristic UI elements - starfield, scroll progress, cursor glow, morphing blobs"""
+    """Inject premium futuristic UI elements - starfield, scroll progress, cursor glow, morphing blobs, lightning cubes, ambient streaks"""
     st.markdown("""
     <!-- Animated Starfield Layers -->
     <div class="stars-layer-1"></div>
@@ -4414,8 +5823,60 @@ def inject_premium_elements():
     
     <!-- Cursor Glow Effect -->
     <div class="cursor-glow" id="cursorGlow"></div>
+
+    <!-- Lightning Cubes — 3D Floating Electric Cubes -->
+    <div class="lightning-cube-layer" id="lightningCubeLayer">
+        <div class="lightning-cube-wrapper lc-1" style="--cube-size:60px;">
+            <div class="lightning-cube-face lightning-cube-face--front"></div>
+            <div class="lightning-cube-face lightning-cube-face--back"></div>
+            <div class="lightning-cube-face lightning-cube-face--right"></div>
+            <div class="lightning-cube-face lightning-cube-face--left"></div>
+            <div class="lightning-cube-face lightning-cube-face--top"></div>
+            <div class="lightning-cube-face lightning-cube-face--bottom"></div>
+        </div>
+        <div class="lightning-cube-wrapper lc-2" style="--cube-size:45px;">
+            <div class="lightning-cube-face lightning-cube-face--front"></div>
+            <div class="lightning-cube-face lightning-cube-face--back"></div>
+            <div class="lightning-cube-face lightning-cube-face--right"></div>
+            <div class="lightning-cube-face lightning-cube-face--left"></div>
+            <div class="lightning-cube-face lightning-cube-face--top"></div>
+            <div class="lightning-cube-face lightning-cube-face--bottom"></div>
+        </div>
+        <div class="lightning-cube-wrapper lc-3" style="--cube-size:35px;">
+            <div class="lightning-cube-face lightning-cube-face--front"></div>
+            <div class="lightning-cube-face lightning-cube-face--back"></div>
+            <div class="lightning-cube-face lightning-cube-face--right"></div>
+            <div class="lightning-cube-face lightning-cube-face--left"></div>
+            <div class="lightning-cube-face lightning-cube-face--top"></div>
+            <div class="lightning-cube-face lightning-cube-face--bottom"></div>
+        </div>
+        <div class="lightning-cube-wrapper lc-4" style="--cube-size:50px;">
+            <div class="lightning-cube-face lightning-cube-face--front"></div>
+            <div class="lightning-cube-face lightning-cube-face--back"></div>
+            <div class="lightning-cube-face lightning-cube-face--right"></div>
+            <div class="lightning-cube-face lightning-cube-face--left"></div>
+            <div class="lightning-cube-face lightning-cube-face--top"></div>
+            <div class="lightning-cube-face lightning-cube-face--bottom"></div>
+        </div>
+    </div>
+
+    <!-- Ambient Light Streaks -->
+    <div class="ambient-light-streak ambient-light-streak-1"></div>
+    <div class="ambient-light-streak ambient-light-streak-2"></div>
+    <div class="ambient-light-streak ambient-light-streak-3"></div>
+
+    <!-- Depth Float Elements -->
+    <div class="depth-float-element depth-float-1"></div>
+    <div class="depth-float-element depth-float-2"></div>
+    <div class="depth-float-element depth-float-3"></div>
     
     <script>
+        // Guard: Prevent duplicate listener registration across Streamlit reruns
+        if (window._equivisionListenersRegistered) {
+            // Already registered — skip all listener setup
+        } else {
+        window._equivisionListenersRegistered = true;
+        
         // === SCROLL PROGRESS INDICATOR ===
         (function() {
             const scrollProgress = document.getElementById('scrollProgress');
@@ -4453,24 +5914,6 @@ def inject_premium_elements():
                 requestAnimationFrame(animateCursor);
             }
             animateCursor();
-        })();
-        
-        // === RIPPLE EFFECT ON BUTTONS ===
-        (function() {
-            document.addEventListener('click', (e) => {
-                const btn = e.target.closest('[data-testid="stButton"] button');
-                if (!btn) return;
-                
-                const ripple = document.createElement('span');
-                ripple.className = 'ripple-effect';
-                
-                const rect = btn.getBoundingClientRect();
-                ripple.style.left = (e.clientX - rect.left) + 'px';
-                ripple.style.top = (e.clientY - rect.top) + 'px';
-                
-                btn.appendChild(ripple);
-                setTimeout(() => ripple.remove(), 600);
-            });
         })();
         
         // === 3D TILT EFFECT ON CARDS ===
@@ -4556,6 +5999,279 @@ def inject_premium_elements():
                 setTimeout(() => confetti.remove(), 4000);
             }
         };
+        
+        // === 3D CARD TILT EFFECT ===
+        (function() {
+            if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+            
+            const tiltCards = document.querySelectorAll('[data-testid="stMetric"], [data-testid="stExpander"]');
+            
+            tiltCards.forEach(card => {
+                card.addEventListener('mousemove', (e) => {
+                    const rect = card.getBoundingClientRect();
+                    const x = (e.clientX - rect.left) / rect.width;
+                    const y = (e.clientY - rect.top) / rect.height;
+                    
+                    const tiltX = (y - 0.5) * -8;
+                    const tiltY = (x - 0.5) * 8;
+                    
+                    card.style.transform = `perspective(800px) rotateX(${tiltX}deg) rotateY(${tiltY}deg) translate3d(0, -3px, 0)`;
+                    card.style.transition = 'transform 0.1s ease';
+                });
+                
+                card.addEventListener('mouseleave', () => {
+                    card.style.transform = 'perspective(800px) rotateX(0deg) rotateY(0deg) translate3d(0, 0, 0)';
+                    card.style.transition = 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)';
+                });
+            });
+        })();
+        
+        // === STAGGERED SCROLL REVEAL ===
+        (function() {
+            if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+            
+            const revealObserver = new IntersectionObserver((entries) => {
+                entries.forEach((entry, idx) => {
+                    if (entry.isIntersecting) {
+                        const el = entry.target;
+                        const delay = idx * 60;
+                        el.style.transition = `opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1) ${delay}ms, transform 0.5s cubic-bezier(0.16, 1, 0.3, 1) ${delay}ms`;
+                        el.style.opacity = '1';
+                        el.style.transform = 'translate3d(0, 0, 0) scale(1)';
+                        revealObserver.unobserve(el);
+                    }
+                });
+            }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+            
+            // Observe cards, expanders, dataframes, forms
+            const revealTargets = document.querySelectorAll(
+                '.menu-card, .person-card, .event-list-card, div.stDataFrame, div[data-testid="stForm"]'
+            );
+            
+            revealTargets.forEach(el => {
+                el.style.opacity = '0';
+                el.style.transform = 'translate3d(0, 20px, 0) scale(0.98)';
+                revealObserver.observe(el);
+            });
+        })();
+        
+        // === RIPPLE CLICK EFFECT ===
+        (function() {
+            document.addEventListener('click', (e) => {
+                const btn = e.target.closest('[data-testid="stButton"] button, .stDownloadButton button');
+                if (!btn) return;
+                
+                const ripple = document.createElement('span');
+                const rect = btn.getBoundingClientRect();
+                const size = Math.max(rect.width, rect.height);
+                
+                ripple.style.cssText = `
+                    position: absolute;
+                    width: ${size}px;
+                    height: ${size}px;
+                    left: ${e.clientX - rect.left - size / 2}px;
+                    top: ${e.clientY - rect.top - size / 2}px;
+                    background: radial-gradient(circle, rgba(255,255,255,0.3) 0%, transparent 60%);
+                    border-radius: 50%;
+                    transform: scale(0);
+                    animation: rippleExpand 0.6s ease-out forwards;
+                    pointer-events: none;
+                    z-index: 1;
+                `;
+                
+                btn.style.position = 'relative';
+                btn.style.overflow = 'hidden';
+                btn.appendChild(ripple);
+                setTimeout(() => ripple.remove(), 700);
+            });
+            
+            // Inject ripple keyframe
+            if (!document.querySelector('#ripple-style')) {
+                const style = document.createElement('style');
+                style.id = 'ripple-style';
+                style.textContent = `
+                    @keyframes rippleExpand {
+                        to { transform: scale(2.5); opacity: 0; }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+        })();
+
+        // === LIGHTNING CUBE PERFORMANCE ADAPTER ===
+        (function() {
+            if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+            
+            const cubeLayer = document.getElementById('lightningCubeLayer');
+            if (!cubeLayer) return;
+            
+            // Performance detection — disable cubes on low FPS
+            let frameCount = 0;
+            let lastTime = performance.now();
+            let lowFpsCount = 0;
+            
+            function checkPerformance() {
+                frameCount++;
+                const now = performance.now();
+                if (now - lastTime >= 1000) {
+                    const fps = frameCount;
+                    frameCount = 0;
+                    lastTime = now;
+                    
+                    if (fps < 30) {
+                        lowFpsCount++;
+                        if (lowFpsCount >= 3) {
+                            // Degrade gracefully — hide cubes
+                            cubeLayer.style.display = 'none';
+                            return; // Stop monitoring
+                        }
+                    } else {
+                        lowFpsCount = Math.max(0, lowFpsCount - 1);
+                    }
+                }
+                requestAnimationFrame(checkPerformance);
+            }
+            requestAnimationFrame(checkPerformance);
+            
+            // Subtle parallax movement on cubes based on mouse
+            let cubeMouseX = 0, cubeMouseY = 0;
+            document.addEventListener('mousemove', (e) => {
+                cubeMouseX = (e.clientX / window.innerWidth - 0.5) * 2;
+                cubeMouseY = (e.clientY / window.innerHeight - 0.5) * 2;
+            }, { passive: true });
+            
+            const cubes = cubeLayer.querySelectorAll('.lightning-cube-wrapper');
+            function animateCubeParallax() {
+                cubes.forEach((cube, i) => {
+                    const factor = (i + 1) * 3;
+                    const tx = cubeMouseX * factor;
+                    const ty = cubeMouseY * factor;
+                    cube.style.marginLeft = tx + 'px';
+                    cube.style.marginTop = ty + 'px';
+                });
+                requestAnimationFrame(animateCubeParallax);
+            }
+            animateCubeParallax();
+        })();
+
+        // === SMOOTH SECTION TRANSITIONS ON SCROLL ===
+        (function() {
+            if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+            
+            const sectionObserver = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.style.opacity = '1';
+                        entry.target.style.transform = 'translate3d(0, 0, 0)';
+                        entry.target.style.filter = 'blur(0)';
+                        sectionObserver.unobserve(entry.target);
+                    }
+                });
+            }, { threshold: 0.05, rootMargin: '0px 0px -60px 0px' });
+            
+            // Observe major content sections
+            const sections = document.querySelectorAll(
+                '.welcome-banner, [data-testid="stForm"], .seat-grid-container, .stDataFrame'
+            );
+            sections.forEach(el => {
+                el.style.opacity = '0';
+                el.style.transform = 'translate3d(0, 25px, 0)';
+                el.style.filter = 'blur(3px)';
+                el.style.transition = 'opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), transform 0.6s cubic-bezier(0.16, 1, 0.3, 1), filter 0.6s ease';
+                sectionObserver.observe(el);
+            });
+        })();
+
+        // === ENHANCED MAGNETIC HOVER FOR MENU CARDS ===
+        (function() {
+            if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+            
+            document.querySelectorAll('.menu-card').forEach(card => {
+                card.addEventListener('mousemove', (e) => {
+                    const rect = card.getBoundingClientRect();
+                    const x = ((e.clientX - rect.left) / rect.width) * 100;
+                    const y = ((e.clientY - rect.top) / rect.height) * 100;
+                    card.style.setProperty('--mouse-x', x + '%');
+                    card.style.setProperty('--mouse-y', y + '%');
+                });
+            });
+        })();
+
+        // === SOFT GLOW ON METRIC HOVER ===
+        (function() {
+            document.querySelectorAll('[data-testid="stMetric"]').forEach(metric => {
+                metric.addEventListener('mouseenter', function() {
+                    this.style.transition = 'all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1)';
+                    this.style.transform = 'translateY(-5px) scale(1.03)';
+                    this.style.boxShadow = '0 12px 35px rgba(124, 92, 252, 0.15), 0 0 20px rgba(124, 92, 252, 0.08)';
+                });
+                metric.addEventListener('mouseleave', function() {
+                    this.style.transform = '';
+                    this.style.boxShadow = '';
+                });
+            });
+        })();
+
+        // === INTERACTIVE FOCUS RING WITH GLOW ===
+        (function() {
+            document.addEventListener('focusin', (e) => {
+                const input = e.target;
+                if (input.tagName === 'INPUT' || input.tagName === 'TEXTAREA') {
+                    input.style.transition = 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)';
+                }
+            });
+        })();
+
+        // === SMOOTH PAGE TRANSITION FADE ===
+        (function() {
+            // Fade in main content on load
+            const mainContent = document.querySelector('[data-testid="stAppViewContainer"]');
+            if (mainContent) {
+                mainContent.style.opacity = '0';
+                mainContent.style.transition = 'opacity 0.5s cubic-bezier(0.16, 1, 0.3, 1)';
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        mainContent.style.opacity = '1';
+                    });
+                });
+            }
+        })();
+
+        // === TOOLTIP ENHANCEMENT ===
+        (function() {
+            const tooltipStyle = document.createElement('style');
+            tooltipStyle.id = 'elite-tooltips';
+            if (!document.querySelector('#elite-tooltips')) {
+                tooltipStyle.textContent = `
+                    .seat-cell[title]:hover::after {
+                        content: attr(title);
+                        position: absolute;
+                        bottom: calc(100% + 8px);
+                        left: 50%;
+                        transform: translateX(-50%) translateY(5px);
+                        padding: 6px 12px;
+                        background: rgba(15, 15, 30, 0.95);
+                        color: #fff;
+                        font-size: 0.75rem;
+                        border-radius: 8px;
+                        white-space: nowrap;
+                        z-index: 1000;
+                        pointer-events: none;
+                        border: 1px solid rgba(124, 92, 252, 0.2);
+                        box-shadow: 0 8px 25px rgba(0, 0, 0, 0.4);
+                        animation: tooltipFade 0.2s ease-out;
+                    }
+                    @keyframes tooltipFade {
+                        from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+                        to { opacity: 1; transform: translateX(-50%) translateY(5px); }
+                    }
+                    .seat-cell { position: relative; }
+                `;
+                document.head.appendChild(tooltipStyle);
+            }
+        })();
+
+        } // end guard
     </script>
     """, unsafe_allow_html=True)
 
@@ -4619,20 +6335,22 @@ def render_header():
 
 def login_page():
     # Starry Background Injection — Cinematic immersive starfield
-    star_sizes = ['star--sm', 'star--md', 'star--lg']
-    star_weights = [0.6, 0.3, 0.1]  # More small stars for realism
-    import random as _r
-    stars_html = "".join([
-        f'<div class="star {_r.choices(star_sizes, weights=star_weights, k=1)[0]}" style="top:{_r.randint(0,100)}%;left:{_r.randint(0,100)}%;animation-duration:{_r.uniform(3,10):.1f}s;animation-delay:{_r.uniform(0,8):.1f}s;"></div>'
-        for _ in range(180)
-    ])
-    # Add shooting stars — more frequent, varied speeds
-    shooting_html = "".join([
-        f'<div class="shooting-star" style="top:{_r.randint(3,45)}%;left:{_r.randint(5,75)}%;animation-delay:{_r.uniform(1,15):.1f}s;animation-duration:{_r.uniform(3,5):.1f}s;"></div>'
-        for _ in range(6)
-    ])
+    # Cache stars HTML to prevent flicker on reruns
+    if 'stars_html' not in st.session_state:
+        star_sizes = ['star--sm', 'star--md', 'star--lg']
+        star_weights = [0.6, 0.3, 0.1]
+        _stars = "".join([
+            f'<div class="star {random.choices(star_sizes, weights=star_weights, k=1)[0]}" style="top:{random.randint(0,100)}%;left:{random.randint(0,100)}%;animation-duration:{random.uniform(3,10):.1f}s;animation-delay:{random.uniform(0,8):.1f}s;"></div>'
+            for _ in range(180)
+        ])
+        _shooting = "".join([
+            f'<div class="shooting-star" style="top:{random.randint(3,45)}%;left:{random.randint(5,75)}%;animation-delay:{random.uniform(1,15):.1f}s;animation-duration:{random.uniform(3,5):.1f}s;"></div>'
+            for _ in range(6)
+        ])
+        st.session_state.stars_html = _stars + _shooting
+    
     st.markdown(f"""
-    <div id="stars-container">{stars_html}{shooting_html}</div>
+    <div id="stars-container">{st.session_state.stars_html}</div>
     <div class="aurora"></div>
     <div class="login-orbital" style="width:350px;height:350px;border-color:rgba(124,92,252,0.05);"></div>
     <div class="login-orbital" style="width:550px;height:550px;animation-duration:45s;border-color:rgba(52,211,153,0.03);"></div>
@@ -4644,7 +6362,7 @@ def login_page():
         st.markdown('<div class="login-title">EquiVision</div>', unsafe_allow_html=True)
         st.markdown('<div class="login-subtitle">Vision Beyond Bias &bull; Seeking Equality &bull; Shaping Fairness</div>', unsafe_allow_html=True)
         
-        if st.session_state.auth_stage == 0:
+        if st.session_state.get('auth_stage', 0) == 0:
             auth_mode = st.radio("Choose", ["Sign In", "Register"], horizontal=True, label_visibility="collapsed")
             
             username = st.text_input("Username")
@@ -4671,6 +6389,7 @@ def login_page():
                             st.session_state.current_user = user['username']
                             st.session_state.user_id = user['id']
                             st.session_state.db_loaded = False
+                            st.session_state.show_welcome = True
                             st.success("✅ Account Created & Signed In!")
                             st.session_state.page = "home"
                             time.sleep(0.5)
@@ -4680,8 +6399,165 @@ def login_page():
                     else:
                         st.error("Username and Password are required.")
 
+def _render_welcome_overlay():
+    """Render the premium welcome overlay animation after signup."""
+    if not st.session_state.get('show_welcome', False):
+        return
+    st.session_state.show_welcome = False
+    
+    welcome_user = st.session_state.get('current_user', 'User')
+    safe_user = html_mod.escape(str(welcome_user))
+    
+    # Use components.html() — st.markdown strips <script> tags!
+    # The JS creates the overlay directly in Streamlit's parent document.
+    components.html(f"""
+<script>
+(function() {{
+    // Target the top-level Streamlit document
+    var doc = window.parent.document;
+    
+    // Prevent duplicate overlays
+    if (doc.getElementById('welcomeOverlay')) return;
+
+    // --- Inject keyframes ---
+    if (!doc.getElementById('welcomeAnimStyles')) {{
+        var style = doc.createElement('style');
+        style.id = 'welcomeAnimStyles';
+        style.textContent = `
+            @keyframes welcomeLetterIn {{
+                from {{ opacity:0; transform:translateY(25px) scale(0.7) rotateX(40deg); }}
+                to {{ opacity:1; transform:translateY(0) scale(1) rotateX(0deg); }}
+            }}
+            @keyframes welcomeParticleBurst {{
+                0% {{ opacity:1; transform:translate(0,0) scale(1); }}
+                100% {{ opacity:0; transform:translate(var(--px),var(--py)) scale(0); }}
+            }}
+            @keyframes welcomeStreakSlide {{
+                0% {{ opacity:0; transform:translateX(-100%); }}
+                50% {{ opacity:1; }}
+                100% {{ opacity:0; transform:translateX(200%); }}
+            }}
+            @keyframes welcomeOverlayExit {{
+                to {{ opacity:0; backdrop-filter:blur(0); transform:scale(1.08); }}
+            }}
+            @keyframes welcomeCubeRotate {{
+                0% {{ transform: rotateX(0deg) rotateY(0deg); }}
+                100% {{ transform: rotateX(360deg) rotateY(360deg); }}
+            }}
+            @keyframes welcomeGlow {{
+                0%,100% {{ box-shadow: 0 0 15px rgba(124,92,252,0.4); }}
+                50% {{ box-shadow: 0 0 40px rgba(124,92,252,0.8), 0 0 80px rgba(56,189,248,0.3); }}
+            }}
+        `;
+        doc.head.appendChild(style);
+    }}
+
+    // --- Build overlay in parent DOM ---
+    var overlay = doc.createElement('div');
+    overlay.id = 'welcomeOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:999999;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(8,8,18,0.94);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);overflow:hidden;opacity:1;transition:opacity 0.3s;';
+
+    // --- 3D Cube ---
+    var cubeWrapper = doc.createElement('div');
+    cubeWrapper.style.cssText = 'position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:120px;height:120px;perspective:600px;z-index:0;';
+    var cube = doc.createElement('div');
+    cube.style.cssText = 'width:100%;height:100%;position:relative;transform-style:preserve-3d;animation:welcomeCubeRotate 8s linear infinite;';
+    var faces = ['rotateY(0deg)','rotateY(180deg)','rotateY(90deg)','rotateY(-90deg)','rotateX(90deg)','rotateX(-90deg)'];
+    for (var f = 0; f < 6; f++) {{
+        var face = doc.createElement('div');
+        face.style.cssText = 'position:absolute;width:120px;height:120px;border:1.5px solid rgba(124,92,252,0.25);background:rgba(124,92,252,0.04);backface-visibility:visible;transform:' + faces[f] + ' translateZ(60px);';
+        cube.appendChild(face);
+    }}
+    cubeWrapper.appendChild(cube);
+    overlay.appendChild(cubeWrapper);
+
+    // --- Particles ---
+    var particleBox = doc.createElement('div');
+    particleBox.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:1;';
+    var colors = ['#8B6FF8','#4ADE80','#38BDF8','#FCD34D','#FB7185'];
+    for (var p = 0; p < 30; p++) {{
+        var d = doc.createElement('div');
+        var px = (Math.random()*500-250).toFixed(0);
+        var py = (Math.random()*500-250).toFixed(0);
+        var sz = (3+Math.random()*5).toFixed(0);
+        d.style.cssText = 'position:absolute;border-radius:50%;top:50%;left:50%;opacity:0;'
+            + 'animation:welcomeParticleBurst ' + (1.5+Math.random()*1.5).toFixed(1) + 's ease-out ' + (0.3+Math.random()*0.8).toFixed(2) + 's forwards;'
+            + '--px:' + px + 'px;--py:' + py + 'px;'
+            + 'background:' + colors[Math.floor(Math.random()*colors.length)] + ';'
+            + 'width:' + sz + 'px;height:' + sz + 'px;';
+        particleBox.appendChild(d);
+    }}
+    overlay.appendChild(particleBox);
+
+    // --- Light Streaks ---
+    var streakBox = doc.createElement('div');
+    streakBox.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:1;';
+    var sc = ['rgba(124,92,252,0.35)','rgba(52,211,153,0.25)','rgba(56,189,248,0.25)'];
+    for (var s = 0; s < 5; s++) {{
+        var sk = doc.createElement('div');
+        sk.style.cssText = 'position:absolute;height:2px;border-radius:2px;opacity:0;'
+            + 'animation:welcomeStreakSlide 1.5s ease-out ' + (0.5+Math.random()*1.5).toFixed(1) + 's forwards;'
+            + 'top:' + (20+Math.random()*60).toFixed(0) + '%;left:' + (-10+Math.random()*50).toFixed(0) + '%;'
+            + 'background:linear-gradient(90deg,transparent,' + sc[Math.floor(Math.random()*sc.length)] + ',transparent);'
+            + 'width:' + (150+Math.random()*250).toFixed(0) + 'px;';
+        streakBox.appendChild(sk);
+    }}
+    overlay.appendChild(streakBox);
+
+    // --- Welcome Title (letter-by-letter) ---
+    var titleEl = doc.createElement('div');
+    titleEl.style.cssText = 'position:relative;z-index:2;font-size:clamp(1.8rem,5vw,3.5rem);font-weight:800;margin-bottom:0.5rem;font-family:inherit;';
+    var welcomeText = 'Welcome, {safe_user}!';
+    for (var i = 0; i < welcomeText.length; i++) {{
+        var span = doc.createElement('span');
+        span.style.cssText = 'display:inline-block;opacity:0;color:#fff;animation:welcomeLetterIn 0.5s ease forwards;animation-delay:' + (0.4 + i * 0.05).toFixed(2) + 's;';
+        span.innerHTML = welcomeText[i] === ' ' ? '&nbsp;' : welcomeText[i];
+        titleEl.appendChild(span);
+    }}
+    overlay.appendChild(titleEl);
+
+    // --- Subtitle ---
+    var subtitle = doc.createElement('div');
+    subtitle.style.cssText = 'position:relative;z-index:2;font-size:1.1rem;color:rgba(255,255,255,0.6);margin-bottom:2rem;letter-spacing:1px;text-transform:uppercase;font-family:inherit;';
+    subtitle.textContent = 'Your journey begins now';
+    overlay.appendChild(subtitle);
+
+    // --- Get Started Button ---
+    var btn = doc.createElement('button');
+    btn.innerHTML = 'Get Started &rarr;';
+    btn.style.cssText = 'position:relative;z-index:10;padding:14px 44px;border:none;border-radius:14px;background:linear-gradient(135deg,#7C5CFC,#38BDF8);color:#fff;font-size:1.1rem;font-weight:700;cursor:pointer;letter-spacing:0.5px;transition:transform 0.25s ease,box-shadow 0.25s ease;animation:welcomeGlow 2s ease-in-out infinite;font-family:inherit;';
+    btn.onmouseenter = function() {{ btn.style.transform='scale(1.07)'; btn.style.boxShadow='0 0 40px rgba(124,92,252,0.6)'; }};
+    btn.onmouseleave = function() {{ btn.style.transform='scale(1)'; btn.style.boxShadow='none'; }};
+    overlay.appendChild(btn);
+
+    // --- Append to parent body ---
+    doc.body.appendChild(overlay);
+
+    // --- Dismiss ---
+    function dismissWelcome() {{
+        if (overlay._dismissed) return;
+        overlay._dismissed = true;
+        overlay.style.animation = 'welcomeOverlayExit 0.7s ease forwards';
+        overlay.style.pointerEvents = 'none';
+        setTimeout(function() {{ if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }}, 750);
+    }}
+    btn.addEventListener('click', dismissWelcome);
+    overlay.addEventListener('click', function(e) {{
+        if (e.target === overlay) dismissWelcome();
+    }});
+    setTimeout(function() {{
+        if (overlay.parentNode && !overlay._dismissed) dismissWelcome();
+    }}, 7000);
+}})();
+</script>
+""", height=0, width=0)
+
+
 def home_page():
     render_header()
+    
+    # Show premium welcome overlay if just signed up
+    _render_welcome_overlay()
     
     # Load data from DB if not already loaded
     if not st.session_state.db_loaded:
@@ -4702,7 +6578,7 @@ def home_page():
     <div class="welcome-banner">
         <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
             <div>
-                <div class="welcome-greeting">{greeting_emoji} {greeting}, {st.session_state.current_user}!</div>
+                <div class="welcome-greeting">{greeting_emoji} {greeting}, {__import__('html').escape(str(st.session_state.current_user))}!</div>
                 <div class="welcome-time">🕒 {now.strftime('%I:%M %p')}  •  📅 {now.strftime('%d %B %Y')}</div>
             </div>
             <div style="display: flex; gap: 1.5rem; flex-wrap: wrap;">
@@ -4826,6 +6702,8 @@ def home_page():
             st.session_state.events = {}
             st.session_state.main_folders = {}
             st.session_state.db_loaded = False
+            st.session_state.current_event = None
+            st.session_state.subpage = None
             st.session_state.page = "login"
             st.rerun()
 
@@ -4838,8 +6716,9 @@ def create_event():
         password = st.text_input("Create Event Password", type="password")
         
         if st.form_submit_button("Create Event"):
-            if name and password:
-                eid = f"{name}_{str(date)}".replace(" ", "_")
+            name_stripped = name.strip() if name else ''
+            if name_stripped and password:
+                eid = f"{name_stripped}_{str(date)}_{uuid.uuid4().hex[:6]}".replace(" ", "_")
                 
                 # Save to Supabase
                 db.create_event(
@@ -4850,7 +6729,7 @@ def create_event():
                 
                 # Also keep in session state
                 st.session_state.events[eid] = {
-                    "name": name,
+                    "name": name_stripped,
                     "date": str(date),
                     "password": password,
                     "hall_rows": 5,
@@ -4876,10 +6755,11 @@ def events_list():
         return
         
     for eid, evt in st.session_state.events.items():
+        safe_name = html_mod.escape(str(evt['name']))
         st.markdown(f"""
         <div class="event-list-card">
-            <h3>{evt['name']}</h3>
-            <div class="event-list-meta">📅 {evt['date']}  •  👥 {len(evt['data'])} Participants</div>
+            <h3>{safe_name}</h3>
+            <div class="event-list-meta">📅 {html_mod.escape(str(evt['date']))}  •  👥 {len(evt['data'])} Participants</div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -4891,6 +6771,13 @@ def events_list():
 def event_menu():
     render_header()
     eid = st.session_state.current_event
+    if eid not in st.session_state.events:
+        st.error("Event not found. It may have been deleted.")
+        st.session_state.page = "home"
+        st.session_state.current_event = None
+        time.sleep(1)
+        st.rerun()
+        return
     evt = st.session_state.events[eid]
     
     # Enhanced Header with gradient
@@ -4905,7 +6792,7 @@ def event_menu():
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
             background-clip: text;
-        ">🖥️ {evt['name']}</h1>
+        ">🖥️ {html_mod.escape(str(evt['name']))}</h1>
         <div style="
             display: inline-flex;
             align-items: center;
@@ -5041,7 +6928,6 @@ def event_menu():
     elif st.session_state.subpage == "hall_dims": hall_dims(evt)
     elif st.session_state.subpage == "team_analysis": team_analysis(evt)
     elif st.session_state.subpage == "team_management": team_management(evt)
-    elif st.session_state.subpage == "team_management": team_management(evt)
     elif st.session_state.subpage == "batch_upload": batch_upload_page(evt)
 
 def attendance_setup(evt):
@@ -5077,8 +6963,9 @@ def attendance_active(evt):
         
         if img_buffer:
             bytes_data = img_buffer.getvalue()
-            if st.session_state.last_photo_hash != bytes_data:
-                st.session_state.last_photo_hash = bytes_data
+            photo_hash = hashlib.md5(bytes_data).hexdigest()
+            if st.session_state.last_photo_hash != photo_hash:
+                st.session_state.last_photo_hash = photo_hash
                 
                 with st.spinner("🔍 Detecting faces..."):
                     image = Image.open(img_buffer)
@@ -5198,7 +7085,11 @@ def attendance_active(evt):
                 with st.form(key=f"reg_form_{idx}"):
                     if "Privacy" in mode:
                         st.caption("🔒 Privacy Mode: Name hidden")
-                        name = f"Anon_{generate_code()}"
+                        # Cache anonymous name to prevent regeneration on reruns
+                        anon_key = f"anon_name_{idx}"
+                        if anon_key not in st.session_state:
+                            st.session_state[anon_key] = f"Anon_{generate_code()}"
+                        name = st.session_state[anon_key]
                         pid = "N/A"; branch = "N/A"; age = 0
                     else:
                         name = st.text_input("Name", key=f"name_{idx}")
@@ -5249,35 +7140,54 @@ def attendance_active(evt):
 
 def database_view(evt):
     st.subheader("📋 Database")
+    eid = st.session_state.current_event
     if evt['data']:
         df = pd.DataFrame(evt['data'])
         
+        # Exclude encoding from display (biometric data + massive arrays)
+        display_cols = [c for c in df.columns if c != 'encoding']
+        
         # Public View (Read-only)
-        st.dataframe(df, use_container_width=True)
+        st.dataframe(df[display_cols], use_container_width=True)
         
         # Edit capability protected by password
         with st.expander("⚠️ Edit Database"):
-            pwd = st.text_input("Enter Event Password to Edit", type="password")
-            if st.button("Unlock Editing"):
-                if pwd == evt['password']:
-                    st.session_state.editing_unlocked = True
-                    st.success("Unlocked! You can now edit below.")
-                else:
-                    st.error("Wrong Password")
-            
-            if st.session_state.get('editing_unlocked', False):
-                st.write("### ✏️ Editor Mode")
-                edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True)
+            evt_pwd = evt.get('password')
+            if not evt_pwd:
+                st.error("⛔ No password set for this event. Cannot edit.")
+            else:
+                pwd = st.text_input("Enter Event Password to Edit", type="password")
+                if st.button("Unlock Editing"):
+                    if pwd == evt_pwd:
+                        st.session_state[f'editing_unlocked_{eid}'] = True
+                        st.success("Unlocked! You can now edit below.")
+                    else:
+                        st.error("Wrong Password")
                 
-                if st.button("💾 Save Changes"):
-                    # Convert back to list of dicts
-                    evt['data'] = edited_df.to_dict('records')
-                    # Sync to DB: clear and re-add
-                    db.clear_attendees(st.session_state.current_event)
-                    for rec in evt['data']:
-                        db.add_attendee(st.session_state.current_event, rec)
-                    st.success("✅ Changes Saved!")
-                    st.rerun()
+                if st.session_state.get(f'editing_unlocked_{eid}', False):
+                    st.write("### ✏️ Editor Mode")
+                    # Preserve encodings before editing (data_editor corrupts arrays)
+                    encodings_backup = {i: row.get('encoding') for i, row in enumerate(evt['data'])}
+                    edit_df = df[display_cols].copy()
+                    edited_df = st.data_editor(edit_df, num_rows="dynamic", use_container_width=True)
+                    
+                    if st.button("💾 Save Changes"):
+                        records = edited_df.to_dict('records')
+                        # Restore encodings from backup
+                        for i, rec in enumerate(records):
+                            if i in encodings_backup:
+                                rec['encoding'] = encodings_backup[i]
+                            # Ensure age is int
+                            if 'age' in rec:
+                                try: rec['age'] = int(rec['age'])
+                                except (ValueError, TypeError): rec['age'] = 0
+                        evt['data'] = records
+                        # Sync to DB: clear and re-add
+                        db.clear_attendees(st.session_state.current_event)
+                        for rec in evt['data']:
+                            db.add_attendee(st.session_state.current_event, rec)
+                        st.success("✅ Changes Saved!")
+                        st.rerun()
     else:
         st.info("Empty database.")
 
@@ -5287,9 +7197,11 @@ def dashboard_view(evt):
     age_range = st.slider("Select Age Range", 0, 100, (0, 100))
     
     if evt['data']:
-        df = pd.DataFrame(evt['data'])
+        df_full = pd.DataFrame(evt['data'])
+        if 'age' in df_full.columns:
+            df_full['age'] = pd.to_numeric(df_full['age'], errors='coerce').fillna(0)
+        df = df_full.copy()
         if 'age' in df.columns:
-            df['age'] = pd.to_numeric(df['age'], errors='coerce').fillna(0)
             df = df[(df['age'] >= age_range[0]) & (df['age'] <= age_range[1])]
             
         # Stats
@@ -5378,8 +7290,8 @@ def dashboard_view(evt):
                     tooltip = f"Row {chr(65+r)}, Seat {c+1}: Empty"
                     
                     if p_data:
-                        name_display = p_data.get('name', '???')
-                        tooltip = f"Row {chr(65+r)}, Seat {c+1}: {name_display} ({p_data['gender']})"
+                        name_display = html_mod.escape(str(p_data.get('name', '???')))
+                        tooltip = html_mod.escape(f"Row {chr(65+r)}, Seat {c+1}: {p_data.get('name', '???')} ({p_data['gender']})")
                         
                         if p_data['gender'] == 'Male':
                             cell_class = "seat-cell seat-male"
@@ -5430,8 +7342,9 @@ def dashboard_view(evt):
         st.write("### 📥 Reports")
         c1, c2 = st.columns(2)
         
-        # CSV
-        csv = df.to_csv(index=False).encode('utf-8')
+        # CSV — exclude encoding column
+        export_cols = [c for c in df.columns if c != 'encoding']
+        csv = df[export_cols].to_csv(index=False).encode('utf-8')
         c1.download_button("Download CSV", csv, "report.csv", "text/csv", use_container_width=True)
         
         # PDF
@@ -5448,22 +7361,24 @@ def dashboard_view(evt):
                     pdf.set_font("Arial", size=10)
                     pdf.cell(200, 10, txt=f"Date: {evt['date']} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", ln=1, align='C')
                     
-                    # Metrics
-                    m_count = len(df[df['gender']=='Male'])
-                    f_count = len(df[df['gender']=='Female'])
-                    nb_count = len(df) - m_count - f_count
-                    avg_age = df['age'].mean() if not df['age'].empty else 0
+                    # Metrics — use full (unfiltered) data for PDF report
+                    pdf_df = df_full
+                    m_count = len(pdf_df[pdf_df['gender']=='Male'])
+                    f_count = len(pdf_df[pdf_df['gender']=='Female'])
+                    nb_count = len(pdf_df) - m_count - f_count
+                    avg_age = pdf_df['age'].mean() if 'age' in pdf_df.columns and not pdf_df['age'].empty else 0
                     
                     pdf.ln(5)
                     pdf.set_font("Arial", style='B', size=12)
                     pdf.cell(0, 10, f"Summary Statistics", ln=1)
                     pdf.set_font("Arial", size=10)
-                    pdf.cell(0, 7, f"Total Attendees: {len(df)}", ln=1)
+                    pdf.cell(0, 7, f"Total Attendees: {len(pdf_df)}", ln=1)
                     pdf.cell(0, 7, f"Male: {m_count} | Female: {f_count} | Non-Binary: {nb_count}", ln=1)
                     pdf.cell(0, 7, f"Average Age: {avg_age:.1f}", ln=1)
                     pdf.ln(5)
 
                     # --- CHARTS ---
+                    _tmp_files = []
                     try:
                         # Pie Chart
                         df_gender = pd.DataFrame([{"Gender": k, "Count": v} for k, v in {"Male": m_count, "Female": f_count, "Non-Binary": nb_count}.items() if v > 0])
@@ -5471,22 +7386,28 @@ def dashboard_view(evt):
                             fig_pie = px.pie(df_gender, values='Count', names='Gender', color='Gender',
                                              color_discrete_map={'Male':'#6C5DD3', 'Female':'#FF5A5F', 'Non-Binary':'#A0D2EB'})
                             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_pie:
+                                _tmp_files.append(tmp_pie.name)
                                 fig_pie.write_image(tmp_pie.name)
                                 pdf.image(tmp_pie.name, x=10, y=pdf.get_y(), w=80)
                         
                         # Age Bar Chart
-                        age_counts = df['age'].value_counts().reset_index()
+                        age_counts = pdf_df['age'].value_counts().reset_index()
                         if not age_counts.empty:
                             age_counts.columns = ['Age', 'Count']
                             fig_bar = px.bar(age_counts, x='Age', y='Count', color='Count', color_continuous_scale=['#A0D2EB', '#6C5DD3'])
                             with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_bar:
+                                _tmp_files.append(tmp_bar.name)
                                 fig_bar.write_image(tmp_bar.name)
-                                pdf.image(tmp_bar.name, x=100, y=pdf.get_y() - 0, w=80) # Side by side? 
+                                pdf.image(tmp_bar.name, x=100, y=pdf.get_y(), w=80)
                                 
                         pdf.ln(60) # Move down past images
                     except Exception as e:
                         pdf.cell(0, 10, f"(Charts unavailable: Install 'kaleido')", ln=1)
-                        # st.error(f"Chart Error: {e}")
+                    finally:
+                        # Clean up temp files
+                        for tf in _tmp_files:
+                            try: os.unlink(tf)
+                            except OSError: pass
 
                     # --- SEATING GRID ---
                     pdf.add_page()
@@ -5589,12 +7510,148 @@ def dashboard_view(evt):
                     # Output
                     pdf_content = pdf.output(dest='S').encode('latin-1')
                     b64 = base64.b64encode(pdf_content).decode()
-                    href = f'<a href="data:application/octet-stream;base64,{b64}" download="EventReport_{evt["name"]}.pdf" class="pdf-download-btn">📄 Download PDF Report</a>'
+                    safe_pdf_name = html_mod.escape(str(evt['name'])).replace('"', '_').replace(' ', '_')
+                    href = f'<a href="data:application/octet-stream;base64,{b64}" download="EventReport_{safe_pdf_name}.pdf" class="pdf-download-btn">📄 Download PDF Report</a>'
                     st.success("✅ PDF Generated!")
                     st.markdown(href, unsafe_allow_html=True)
                 
                 except Exception as e:
                     st.error(f"PDF Error: {e}")
+        
+        # ═══════════════════════════════════════════════════════════════
+        # ADVANCED FEATURE: Smart Insights & Anomaly Detection Engine
+        # ═══════════════════════════════════════════════════════════════
+        st.markdown("---")
+        st.markdown("### 🧠 Smart Insights Engine")
+        st.caption("AI-powered analysis of your attendance data — patterns, anomalies, and recommendations.")
+        
+        insights = []
+        warnings_insight = []
+        recommendations = []
+        
+        # Use unfiltered data for insights (not affected by age slider)
+        total = len(df_full)
+        m_total = len(df_full[df_full['gender'] == 'Male'])
+        f_total = len(df_full[df_full['gender'] == 'Female'])
+        nb_total = total - m_total - f_total
+        
+        # 1. Gender Balance Analysis
+        if total > 0:
+            m_pct = (m_total / total) * 100
+            f_pct = (f_total / total) * 100
+            ratio_str = f"{m_pct:.0f}% Male / {f_pct:.0f}% Female"
+            
+            if abs(m_pct - f_pct) < 10:
+                insights.append(("✅ **Excellent Gender Balance**", f"Near-equal distribution: {ratio_str}. Great diversity!", "success"))
+            elif abs(m_pct - f_pct) < 25:
+                insights.append(("⚠️ **Moderate Gender Imbalance**", f"Distribution: {ratio_str}. Consider outreach to underrepresented group.", "warning"))
+            else:
+                dominant = "Male" if m_pct > f_pct else "Female"
+                warnings_insight.append(f"Significant gender imbalance detected: {ratio_str}. {dominant} participants dominate by {abs(m_pct - f_pct):.0f}%.")
+        
+        # 2. Capacity Analysis
+        total_seats = evt.get('hall_rows', 5) * evt.get('hall_cols', 10)
+        occupancy = (total / total_seats * 100) if total_seats > 0 else 0
+        remaining = total_seats - total
+        
+        if occupancy >= 95:
+            warnings_insight.append(f"Hall is at **{occupancy:.0f}%** capacity ({remaining} seats left). Consider expanding hall dimensions.")
+        elif occupancy >= 75:
+            insights.append(("📊 **High Occupancy**", f"Hall is {occupancy:.0f}% full. {remaining} seats remaining.", "info"))
+        elif occupancy > 0:
+            insights.append(("🏟️ **Capacity Status**", f"Hall is {occupancy:.0f}% full with {remaining} seats available.", "info"))
+        
+        # 3. Registration Velocity  
+        if 'timestamp' in df_full.columns and total >= 3:
+            try:
+                timestamps = pd.to_datetime(df_full['timestamp'], errors='coerce').dropna().sort_values()
+                if len(timestamps) >= 3:
+                    time_diffs = timestamps.diff().dropna().dt.total_seconds()
+                    avg_interval = time_diffs.mean()
+                    
+                    if avg_interval < 5:
+                        warnings_insight.append(f"Unusually rapid registrations detected (avg {avg_interval:.1f}s between entries). Verify data integrity.")
+                    elif avg_interval < 30:
+                        insights.append(("⚡ **Fast Registration Pace**", f"Average {avg_interval:.0f}s between entries — efficient processing!", "success"))
+                    
+                    # Burst detection
+                    burst_threshold = avg_interval * 0.2  # 80% faster than average
+                    bursts = (time_diffs < burst_threshold).sum()
+                    if bursts > 3:
+                        insights.append(("📈 **Burst Activity Detected**", f"{bursts} rapid consecutive registrations detected. Possible batch processing periods.", "info"))
+            except Exception:
+                pass
+        
+        # 4. Age Distribution Analysis
+        if 'age' in df_full.columns:
+            ages = pd.to_numeric(df_full['age'], errors='coerce').dropna()
+            if len(ages) > 0 and ages.max() > 0:
+                avg_age_val = ages.mean()
+                std_age = ages.std() if len(ages) > 1 else 0
+                
+                if std_age > 15:
+                    insights.append(("🎭 **Diverse Age Group**", f"Wide age range (std dev: {std_age:.1f} years). Consider age-appropriate grouping.", "info"))
+                
+                # Outlier detection
+                if len(ages) > 5 and std_age > 0:
+                    z_scores = abs((ages - avg_age_val) / std_age)
+                    outliers = (z_scores > 2.5).sum()
+                    if outliers > 0:
+                        warnings_insight.append(f"{outliers} age outlier(s) detected (>2.5σ from mean age {avg_age_val:.0f}). Verify these entries.")
+        
+        # 5. Seating Efficiency
+        if total > 0:
+            seat_issues = sum(1 for p in evt['data'] if "Full" in str(p.get('seat', '')) or "Error" in str(p.get('seat', '')))
+            if seat_issues > 0:
+                warnings_insight.append(f"{seat_issues} participant(s) could not be seated properly. Review hall dimensions or cluster size.")
+        
+        # 6. Name Pattern Analysis
+        if total > 0 and 'name' in df_full.columns:
+            names = df_full['name'].dropna().tolist()
+            auto_named = sum(1 for n in names if str(n).startswith('P') and any(c.isdigit() for c in str(n)))
+            manual_named = total - auto_named
+            if manual_named > 0 and auto_named > 0:
+                insights.append(("📝 **Mixed Naming**", f"{manual_named} manually named + {auto_named} auto-labeled participants. Consider standardizing.", "info"))
+        
+        # 7. Recommendations
+        if total == 0:
+            recommendations.append("Start by registering participants via Camera or Batch Upload.")
+        else:
+            if remaining < total * 0.1 and remaining > 0:
+                recommendations.append(f"Only {remaining} seats left. Consider increasing hall capacity before next session.")
+            if nb_total > 0 and nb_total / total > 0.15:
+                recommendations.append("Significant non-binary participation — ensure team formation accounts for inclusive distribution.")
+            if total > 20 and not evt.get('team_members'):
+                recommendations.append("With 20+ participants, consider using the Team Management feature for group activities.")
+            if total > 0 and not evt.get('roles'):
+                recommendations.append("Define roles in the Role Allocation tab to leverage skill-based team assignment.")
+        
+        # Render Insights
+        if warnings_insight:
+            for w in warnings_insight:
+                st.warning(w)
+        
+        if insights:
+            insight_cols = st.columns(min(len(insights), 3))
+            for i, (title, desc, stype) in enumerate(insights):
+                with insight_cols[i % len(insight_cols)]:
+                    st.markdown(f"""
+                    <div style="padding:1rem;border-radius:12px;border:1px solid rgba(124,92,252,0.15);background:rgba(124,92,252,0.05);margin-bottom:0.5rem;">
+                        <div style="font-size:0.95rem;font-weight:700;margin-bottom:0.3rem;">{title}</div>
+                        <div style="font-size:0.82rem;color:rgba(255,255,255,0.7);">{desc}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        
+        if recommendations:
+            with st.expander("💡 Recommendations", expanded=False):
+                for r in recommendations:
+                    st.markdown(f"- {r}")
+        
+        if not insights and not warnings_insight and total > 0:
+            st.success("✅ All metrics look healthy. No anomalies detected.")
+    
+    else:
+        st.info("📭 No data yet. Start by registering participants to see analytics.")
 
 def hall_dims(evt):
     st.subheader("⚙️ Hall Dimensions")
@@ -5664,31 +7721,14 @@ def batch_upload_page(evt):
             cluster = evt.get('cluster_size', 1)
             seat_mgr = SeatingManager(rows, cols, cluster_size=cluster)
             
-            # Determine starting P number
-            max_p = 0
-            for d in evt['data']:
-                name = d.get('name', '')
-                # Extract number from P<Number>...
-                if name.startswith('P'):
-                    # specific parsing to handle P1, P1-1M etc
-                    # Just take the first digit sequence
-                    import re
-                    match = re.search(r'P(\d+)', name)
-                    if match:
-                        num = int(match.group(1))
-                        if num > max_p: max_p = num
-            
-            next_p_num = max_p + 1
             processed_count = 0
             warnings_list = []
+            hall_full = False
             
             for i, img_file in enumerate(uploaded_files):
+                if hall_full:
+                    break
                 status_text.text(f"Processing image {i+1}/{new_files_count}...")
-                current_p_label_base = next_p_num + processed_count # P number based on actual added count to keep sequence? 
-                # Actually, if we skip, the P number shouldn't increment if we want P1, P2... but user said P4 repeated.
-                # If P4 is repeated, we just say P4 repeated.
-                # Let's keep P_num incrementing for every *file* attempt or just successful ones?
-                # Usually successful ones.
                 
                 try:
                     # Detect
@@ -5722,13 +7762,18 @@ def batch_upload_page(evt):
                                 # Create list of encodings for this event
                                 event_indices = [idx for idx, meta in enumerate(known_ids) if meta['event_id'] == current_evt_id]
                                 if event_indices:
-                                    event_encs = [known_encs[idx] for idx in event_indices]
+                                    event_encs = np.array([known_encs[idx] for idx in event_indices])
                                     
-                                    # Calculate distances
-                                    # simple euclidean distance
-                                    distances = np.linalg.norm(event_encs - new_encoding, axis=1)
-                                    min_dist_idx = np.argmin(distances)
-                                    if distances[min_dist_idx] < 0.5: # Strict threshold for duplicate
+                                    # Calculate distances using cosine similarity (consistent with live mode)
+                                    new_norm = np.linalg.norm(new_encoding)
+                                    if new_norm == 0:
+                                        similarities = np.zeros(len(event_encs))
+                                    else:
+                                        norms = np.linalg.norm(event_encs, axis=1)
+                                        norms[norms == 0] = 1  # avoid division by zero
+                                        similarities = np.dot(event_encs, new_encoding) / (norms * new_norm)
+                                    min_dist_idx = np.argmax(similarities)
+                                    if similarities[min_dist_idx] > 0.65: # Cosine threshold matching live mode
                                         match_found = True
                                         original_idx = event_indices[min_dist_idx]
                                         matched_name = known_ids[original_idx]['name']
@@ -5742,7 +7787,8 @@ def batch_upload_page(evt):
                                 st.error(f"❌ Hall Full! Stopped at {img_file.name}. (Seat limit reached)")
                                 # Stop everything? or just this face?
                                 # Break out of file loop
-                                raise StopIteration("Hall Full")
+                                hall_full = True
+                                break  # break out of face loop
 
                             gender = face['gender']
                             
@@ -5786,8 +7832,6 @@ def batch_upload_page(evt):
                     else:
                         st.warning(f"⚠️ No face detected in {img_file.name}. Skipped.")
                         
-                except StopIteration:
-                    break
                 except Exception as e:
                     st.error(f"Error processing {img_file.name}: {e}")
                 
@@ -5798,7 +7842,7 @@ def batch_upload_page(evt):
                     st.warning(w)
                     
             st.success(f"✅ Batch Processing Complete! Registered {processed_count} new participants.")
-            time.sleep(3) # Give time to read warnings
+            time.sleep(1)
             st.rerun()
 
 def create_folder():
@@ -5806,12 +7850,20 @@ def create_folder():
     st.header("📁 Create Main Event Folder")
     f_name = st.text_input("Folder Name")
     if st.button("Create"):
-        folder = db.create_folder(st.session_state.user_id, f_name)
-        folder_db_id = folder['id'] if folder else None
-        st.session_state.main_folders[f_name] = {"date": str(datetime.now().date()), "events": [], "db_id": folder_db_id}
-        st.success("Created!")
-        st.session_state.page = "home"
-        st.rerun()
+        if not f_name or not f_name.strip():
+            st.error("Please enter a valid folder name.")
+        elif f_name.strip() in st.session_state.main_folders:
+            st.error("A folder with this name already exists.")
+        else:
+            f_name = f_name.strip()
+            folder = db.create_folder(st.session_state.user_id, f_name)
+            if folder:
+                st.session_state.main_folders[f_name] = {"date": str(datetime.now().date()), "events": [], "db_id": folder['id']}
+                st.success("Created!")
+                st.session_state.page = "home"
+                st.rerun()
+            else:
+                st.error("Failed to create folder. Please try again.")
 
 def view_folders():
     render_header()
@@ -5832,11 +7884,14 @@ def view_folders():
             
             sel_evt = st.selectbox("Add Event to Folder", avail, key=f"sel_add_{fname}")
             if st.button("Add", key=f"btn_add_{fname}"):
-                fdata['events'].append(sel_evt)
-                if fdata.get('db_id'):
-                    db.add_event_to_folder(fdata['db_id'], sel_evt)
-                st.success("Added!")
-                st.rerun()
+                if sel_evt is not None:
+                    fdata['events'].append(sel_evt)
+                    if fdata.get('db_id'):
+                        db.add_event_to_folder(fdata['db_id'], sel_evt)
+                    st.success("Added!")
+                    st.rerun()
+                else:
+                    st.warning("No events available to add.")
                 
             # Aggregate Stats
             if fdata['events']:
@@ -5902,10 +7957,6 @@ def view_folders():
                              st.session_state.page = "event_menu"
                              st.rerun()
 
-try:
-    from utils import SeatingManager, TeamManager, TeamBalancer
-except: pass
-
 def team_management(evt):
     st.header("🤝 Team Role Allocation")
     
@@ -5965,7 +8016,10 @@ def team_management(evt):
                 st.write(f"**{r}** (Count: {data['count']})")
                 st.json(data['reqs'])
                 if st.button(f"Delete {r}", key=f"del_{r}"):
-                    del evt['roles'][r]
+                    roles_copy = dict(evt['roles'])
+                    del roles_copy[r]
+                    evt['roles'] = roles_copy
+                    db.save_roles(st.session_state.current_event, evt['roles'])
                     st.rerun()
         else:
             st.info("No roles defined yet.")
@@ -6041,9 +8095,10 @@ def team_management(evt):
             # Editing Toggle
             if st.toggle("Enable Editing"):
                 pwd = st.text_input("Enter Event Password to Edit", type="password")
-                real_pwd = evt.get('password', 'admin') # Default to admin if not set
-                
-                if pwd == real_pwd:
+                real_pwd = evt.get('password')
+                if not real_pwd:
+                    st.error("⛔ No password configured for this event.")
+                elif pwd == real_pwd:
                     st.success("🔓 Editing Enabled")
                     df_edit = pd.DataFrame(display_data)
                     
@@ -6092,9 +8147,10 @@ def team_management(evt):
             
             st.write("### 🎯 Results")
             
-            cols = st.columns(len(assignments))
+            num_cols = max(1, len(assignments))
+            cols = st.columns(num_cols)
             for i, (r_name, assigned) in enumerate(assignments.items()):
-                with cols[i % len(cols)]:
+                with cols[i % num_cols]:
                     st.success(f"**{r_name}**")
                     if not assigned:
                         st.warning("No candidates.")
@@ -6109,6 +8165,10 @@ def team_management(evt):
                         st.write(f"- {l}")
 
 # --- MAIN ROUTING ---
+# Ensure DB data is loaded for all authenticated pages
+if st.session_state.page != "login" and not st.session_state.db_loaded:
+    load_from_db()
+
 if st.session_state.page == "login": login_page()
 elif st.session_state.page == "home": home_page()
 elif st.session_state.page == "create_event": create_event()

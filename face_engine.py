@@ -1,8 +1,7 @@
 import numpy as np
 import cv2
 from PIL import Image
-import os
-import math
+from typing import List, Dict, Optional, Tuple
 
 # Try importing DeepFace
 try:
@@ -129,7 +128,7 @@ class FaceEngine:
                         
                         face_data["gender"] = g_res
                         face_data["confidence"] = analysis['gender'][analysis['dominant_gender']]
-                    except:
+                    except Exception:
                         face_data["gender"] = "Unknown"
 
             # Duplicate Detection using Cosine Similarity (more robust for Facenet512)
@@ -138,24 +137,23 @@ class FaceEngine:
                 current_norm = np.linalg.norm(current_vec)
                 
                 if current_norm > 0:
-                    best_similarity = 0
-                    best_match_idx = -1
+                    # Vectorized similarity computation for performance
+                    known_matrix = np.array(self.known_encodings)
+                    known_norms = np.linalg.norm(known_matrix, axis=1)
+                    valid_mask = known_norms > 0
                     
-                    for idx, known_vec in enumerate(self.known_encodings):
-                        known_norm = np.linalg.norm(known_vec)
-                        if known_norm == 0: continue
+                    if valid_mask.any():
+                        similarities = np.zeros(len(known_matrix))
+                        similarities[valid_mask] = np.dot(known_matrix[valid_mask], current_vec) / (known_norms[valid_mask] * current_norm)
                         
-                        cosine_similarity = np.dot(known_vec, current_vec) / (known_norm * current_norm)
+                        best_match_idx = np.argmax(similarities)
+                        best_similarity = similarities[best_match_idx]
                         
-                        if cosine_similarity > best_similarity:
-                            best_similarity = cosine_similarity
-                            best_match_idx = idx
-                    
-                    # Threshold: 0.65 for Facenet512 (optimized for accuracy)
-                    if best_similarity > 0.65 and best_match_idx >= 0:
-                        face_data["is_duplicate"] = True
-                        face_data["duplicate_info"] = self.known_ids[best_match_idx]
-                        face_data["match_confidence"] = best_similarity
+                        # Threshold: 0.65 for Facenet512 (optimized for accuracy)
+                        if best_similarity > 0.65:
+                            face_data["is_duplicate"] = True
+                            face_data["duplicate_info"] = self.known_ids[best_match_idx]
+                            face_data["match_confidence"] = float(best_similarity)
             
             results.append(face_data)
             
